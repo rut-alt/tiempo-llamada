@@ -9,7 +9,8 @@ st.title("📞 Tiempo hasta la primera llamada (desde creación del negocio)")
 st.write(
     "Sube un Excel exportado de Pipedrive (Actividades) filtrado a **tipo = llamada**. "
     "La app calcula la **primera llamada por ID de negocio** (la más cercana y posterior a la creación) "
-    "y el **tiempo medio por agente**."
+    "y el **tiempo medio por agente**. "
+    "Incluye ajuste para leads creados antes de la hora de inicio (por defecto, 09:00)."
 )
 
 uploaded = st.file_uploader("Sube tu Excel (.xlsx)", type=["xlsx"])
@@ -20,20 +21,29 @@ COL_CREATED = "Negocio - Negocio creado el"
 COL_CALL_DONE = "Actividad - Hora en que se marcó como completada"
 COL_OWNER = "Negocio - Propietario"
 
+# ✅ Ajuste de horario: si el lead se crea antes de esta hora, el reloj empieza a contar a esta hora
+WORK_START_HOUR = 9
+
+def adjust_creation_time(ts: pd.Timestamp) -> pd.Timestamp:
+    """Si se crea antes de WORK_START_HOUR, ajusta a las WORK_START_HOUR:00:00 del mismo día."""
+    if pd.isna(ts):
+        return ts
+    if ts.hour < WORK_START_HOUR:
+        return ts.replace(hour=WORK_START_HOUR, minute=0, second=0, microsecond=0)
+    return ts
+
 def format_duration_exact(seconds: float) -> str:
     """
     Formatea sin redondear:
       - si hay días:   '2d 03:04:05'
       - si no:         '03:04:05'
-    Mantiene el signo si fuese negativo (aunque aquí filtramos delta>=0).
     """
     if pd.isna(seconds):
         return ""
     sign = "-" if seconds < 0 else ""
     seconds = abs(seconds)
 
-    # Importante: NO redondeamos. Nos quedamos con la parte entera.
-    total_seconds = int(seconds)
+    total_seconds = int(seconds)  # NO redondeamos
 
     days, rem = divmod(total_seconds, 86400)
     hours, rem = divmod(rem, 3600)
@@ -51,16 +61,19 @@ def compute_first_call(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, st
     df[COL_CREATED] = pd.to_datetime(df[COL_CREATED], errors="coerce")
     df[COL_CALL_DONE] = pd.to_datetime(df[COL_CALL_DONE], errors="coerce")
 
-    # 1) Filtro 1: ID, creación y hora completada NO vacíos
+    # 1) Filtro: ID, creación y hora completada NO vacíos
     df = df.dropna(subset=[COL_DEAL_ID, COL_CREATED, COL_CALL_DONE])
 
-    # 2) Delta segundos (llamada - creación)
-    df["delta_sec"] = (df[COL_CALL_DONE] - df[COL_CREATED]).dt.total_seconds()
+    # 2) Ajuste horario para leads de madrugada (creación ajustada)
+    df["created_adjusted"] = df[COL_CREATED].apply(adjust_creation_time)
 
-    # 3) Filtro 2: solo llamadas posteriores o iguales a la creación
+    # 3) Delta segundos (llamada - creación ajustada)
+    df["delta_sec"] = (df[COL_CALL_DONE] - df["created_adjusted"]).dt.total_seconds()
+
+    # 4) Solo llamadas posteriores o iguales a la creación ajustada
     df = df[df["delta_sec"] >= 0]
 
-    # 4) Elegir primera llamada por negocio = delta mínimo
+    # 5) Primera llamada por negocio = delta mínimo
     def pick_first(group: pd.DataFrame) -> pd.Series:
         if len(group) == 0:
             return pd.Series({"first_call_time": pd.NaT, "delta_sec": np.nan})
@@ -74,8 +87,9 @@ def compute_first_call(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, st
 
     first = df.groupby(COL_DEAL_ID).apply(pick_first).reset_index()
 
-    # Cabecera por negocio (creación y propietario)
+    # Cabecera por negocio (creación original, creación ajustada y propietario)
     created = df.groupby(COL_DEAL_ID)[COL_CREATED].min().reset_index()
+    created_adj = df.groupby(COL_DEAL_ID)["created_adjusted"].min().reset_index()
 
     owners = None
     if COL_OWNER in df.columns:
@@ -86,7 +100,7 @@ def compute_first_call(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, st
         )
 
     # Resultado final: 1 fila por negocio
-    res = created.merge(first, on=COL_DEAL_ID, how="left")
+    res = created.merge(created_adj, on=COL_DEAL_ID, how="left").merge(first, on=COL_DEAL_ID, how="left")
     if owners is not None:
         res = res.merge(owners, on=COL_DEAL_ID, how="left")
 
@@ -140,14 +154,14 @@ if uploaded:
     res, agent_stats, media_total, mediana_total = compute_first_call(df)
 
     col1, col2 = st.columns(2)
-    col1.metric("Media total (tiempo hasta 1ª llamada)", media_total)
-    col2.metric("Mediana total", mediana_total)
+    col1.metric("Media total (tiempo hasta 1ª llamada, ajustado a horario)", media_total)
+    col2.metric("Mediana total (ajustado a horario)", mediana_total)
 
-    st.subheader("Primera llamada por negocio (solo 1 fila por ID)")
+    st.subheader("✅ Primera llamada por negocio (1 fila por ID)")
     st.dataframe(res, use_container_width=True)
 
     if len(agent_stats) > 0:
-        st.subheader("Resumen por agente")
+        st.subheader("👤 Resumen por agente")
         st.dataframe(agent_stats[[COL_OWNER, "leads", "media", "mediana"]], use_container_width=True)
 
     xlsx_bytes = to_excel_bytes(res, agent_stats)
