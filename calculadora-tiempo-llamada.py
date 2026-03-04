@@ -143,11 +143,11 @@ if uploaded:
     col1.metric("Media total (tiempo hasta 1ª llamada)", media_total)
     col2.metric("Mediana total", mediana_total)
 
-    st.subheader("✅ Primera llamada por negocio (solo 1 fila por ID)")
+    st.subheader("Primera llamada por negocio (solo 1 fila por ID)")
     st.dataframe(res, use_container_width=True)
 
     if len(agent_stats) > 0:
-        st.subheader("👤 Resumen por agente")
+        st.subheader("Resumen por agente")
         st.dataframe(agent_stats[[COL_OWNER, "leads", "media", "mediana"]], use_container_width=True)
 
     xlsx_bytes = to_excel_bytes(res, agent_stats)
