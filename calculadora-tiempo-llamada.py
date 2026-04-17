@@ -55,162 +55,19 @@ def normalize_name(value) -> str:
         return ""
     return " ".join(str(value).strip().lower().split())
 
-
-# Horarios por agente
-# IMPORTANTE: las claves van normalizadas en minúsculas
-AGENT_SCHEDULES = {
-    # Solvo
-    "jose luis vicuña": {
-        0: [(time(12, 30), time(20, 0))],
-        1: [(time(12, 30), time(20, 0))],
-        2: [(time(12, 30), time(20, 0))],
-        3: [(time(12, 30), time(20, 0))],
-        4: [(time(12, 30), time(20, 0))],
-        5: [(time(12, 30), time(20, 0))],
-    },
-    "yamile vidal": {
-        0: [(time(12, 30), time(20, 0))],
-        1: [(time(12, 30), time(20, 0))],
-        2: [(time(12, 30), time(20, 0))],
-        3: [(time(12, 30), time(20, 0))],
-        4: [(time(12, 30), time(20, 0))],
-        5: [(time(12, 30), time(20, 0))],
-    },
-    "andres felipe velasquez salcedo": {
-        0: [(time(12, 30), time(20, 0))],
-        1: [(time(12, 30), time(20, 0))],
-        2: [(time(12, 30), time(20, 0))],
-        3: [(time(12, 30), time(20, 0))],
-        4: [(time(12, 30), time(20, 0))],
-        5: [(time(12, 30), time(20, 0))],
-    },
-    "emilse benavidez": {
-        0: [(time(12, 30), time(20, 0))],
-        1: [(time(12, 30), time(20, 0))],
-        2: [(time(12, 30), time(20, 0))],
-        3: [(time(12, 30), time(20, 0))],
-        4: [(time(12, 30), time(20, 0))],
-        5: [(time(12, 30), time(20, 0))],
-    },
-    "lizeth rojas": {
-        0: [(time(12, 30), time(20, 0))],
-        1: [(time(12, 30), time(20, 0))],
-        2: [(time(12, 30), time(20, 0))],
-        3: [(time(12, 30), time(20, 0))],
-        4: [(time(12, 30), time(20, 0))],
-        5: [(time(12, 30), time(20, 0))],
-    },
-    "viviana balanta": {
-        0: [(time(12, 30), time(20, 0))],
-        1: [(time(12, 30), time(20, 0))],
-        2: [(time(12, 30), time(20, 0))],
-        3: [(time(12, 30), time(20, 0))],
-        4: [(time(12, 30), time(20, 0))],
-        5: [(time(12, 30), time(20, 0))],
-    },
-
-    # Toñi
-    "toñi": {
-        0: [(time(9, 0), time(14, 0))],
-        1: [(time(9, 0), time(14, 0))],
-        2: [(time(9, 0), time(14, 0))],
-        3: [(time(9, 0), time(14, 0))],
-        4: [(time(9, 0), time(14, 0))],
-    },
-    "toni": {
-        0: [(time(9, 0), time(14, 0))],
-        1: [(time(9, 0), time(14, 0))],
-        2: [(time(9, 0), time(14, 0))],
-        3: [(time(9, 0), time(14, 0))],
-        4: [(time(9, 0), time(14, 0))],
-    },
-
-    # Meri
-    "meri": {
-        0: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
-        1: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
-        2: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
-        3: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
-        4: [(time(9, 30), time(15, 0))],
-    },
-
-    # Isabel, Carolina y Jesús
-    "isabel tortosa vivas": {
-        0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        4: [(time(9, 0), time(14, 30))],
-    },
-    "diana carolina": {
-        0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        4: [(time(9, 0), time(14, 30))],
-    },
-    "carolina": {
-        0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        4: [(time(9, 0), time(14, 30))],
-    },
-    "jesús": {
-        0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        4: [(time(9, 0), time(14, 30))],
-    },
-    "jesus": {
-        0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        4: [(time(9, 0), time(14, 30))],
-    },
+# Horario general de disponibilidad del equipo
+# Lunes a viernes: 09:00 - 20:00
+# Sábados: 12:30 - 20:00
+# Domingos: sin servicio
+TEAM_SCHEDULE = {
+    0: [(time(9, 0), time(20, 0))],    # lunes
+    1: [(time(9, 0), time(20, 0))],    # martes
+    2: [(time(9, 0), time(20, 0))],    # miércoles
+    3: [(time(9, 0), time(20, 0))],    # jueves
+    4: [(time(9, 0), time(20, 0))],    # viernes
+    5: [(time(12, 30), time(20, 0))],  # sábado
 }
 
-DEFAULT_SCHEDULE = {
-    0: [(time(9, 0), time(18, 0))],
-    1: [(time(9, 0), time(18, 0))],
-    2: [(time(9, 0), time(18, 0))],
-    3: [(time(9, 0), time(18, 0))],
-    4: [(time(9, 0), time(18, 0))],
-}
-
-
-def get_schedule_for_agent(agent_name: str):
-    norm = normalize_name(agent_name)
-
-    if norm in AGENT_SCHEDULES:
-        return AGENT_SCHEDULES[norm]
-
-    if "isabel" in norm:
-        return AGENT_SCHEDULES["isabel tortosa vivas"]
-    if "carolina" in norm:
-        return AGENT_SCHEDULES["carolina"]
-    if "jesús" in norm or "jesus" in norm:
-        return AGENT_SCHEDULES["jesús"]
-    if "toñi" in norm or "toni" in norm:
-        return AGENT_SCHEDULES["toñi"]
-    if "meri" in norm:
-        return AGENT_SCHEDULES["meri"]
-    if "jose luis vicuña" in norm or "solvo" in norm:
-        return AGENT_SCHEDULES["jose luis vicuña"]
-    if "yamile" in norm:
-        return AGENT_SCHEDULES["yamile vidal"]
-    if "andres felipe" in norm:
-        return AGENT_SCHEDULES["andres felipe velasquez salcedo"]
-    if "emilse" in norm:
-        return AGENT_SCHEDULES["emilse benavidez"]
-    if "lizeth" in norm:
-        return AGENT_SCHEDULES["lizeth rojas"]
-    if "viviana" in norm:
-        return AGENT_SCHEDULES["viviana balanta"]
-
-    return DEFAULT_SCHEDULE
 
 
 def is_holiday(ts: pd.Timestamp) -> bool:
