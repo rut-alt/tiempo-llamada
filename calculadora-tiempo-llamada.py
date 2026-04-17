@@ -634,4 +634,4 @@ if uploaded:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 else:
-    st.info("Sube un Excel para calcular el primer contacto por lead único.") hay algo roto? es que he cambiado los horarios, que lostenias mal, corrigelo mantiendolo todo igual
+    st.info("Sube un Excel para calcular el primer contacto por lead único.")
