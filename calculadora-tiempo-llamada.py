@@ -13,7 +13,6 @@ st.write(
 )
 
 uploaded = st.file_uploader("Sube tu Excel (.xlsx)", type=["xlsx"])
-apply_filter = st.checkbox("Aplicar filtro: excluir llamadas > 1 día", value=False)
 
 COL_DEAL_ID = "Negocio - ID"
 COL_CREATED = "Negocio - Negocio creado el"
@@ -22,7 +21,6 @@ COL_SUBJECT = "Actividad - Asunto"
 COL_OWNER = "Negocio - Propietario"
 
 WORK_START_HOUR = 9
-MAX_SECONDS = 86400  # 1 día
 
 
 def adjust_creation_time(ts: pd.Timestamp) -> pd.Timestamp:
@@ -50,7 +48,7 @@ def format_duration_exact(seconds: float) -> str:
     return f"{sign}{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
-def compute_first_outbound_call(df: pd.DataFrame, apply_filter: bool):
+def compute_first_outbound_call(df: pd.DataFrame):
     df = df.copy()
 
     # Normalizar tipos
@@ -74,12 +72,8 @@ def compute_first_outbound_call(df: pd.DataFrame, apply_filter: bool):
     # Solo actividades posteriores o iguales a la creación ajustada
     df = df[df["delta_sec"] >= 0].copy()
 
-    # Filtro opcional: excluir llamadas de más de 1 día
-    if apply_filter:
-        df = df[df["delta_sec"] <= MAX_SECONDS].copy()
-
-    # Orden cronológico por lead: así la primera fila será la primera llamada
-    df = df.sort_values([COL_DEAL_ID, COL_DUE_DATE, COL_SUBJECT], ascending=[True, True, True]).copy()
+    # Orden cronológico por lead
+    df = df.sort_values([COL_DEAL_ID, COL_DUE_DATE, COL_SUBJECT]).copy()
 
     # Primera actividad por lead único
     first_calls = df.drop_duplicates(subset=[COL_DEAL_ID], keep="first").copy()
@@ -157,7 +151,7 @@ if uploaded:
         st.write("Columnas detectadas:", list(df.columns))
         st.stop()
 
-    res, agent_stats, media_total, mediana_total, debug_calls = compute_first_outbound_call(df, apply_filter)
+    res, agent_stats, media_total, mediana_total, debug_calls = compute_first_outbound_call(df)
 
     col1, col2, col3 = st.columns(3)
     col1.metric("Leads únicos con 1ª llamada", f"{len(res):,}".replace(",", "."))
@@ -175,14 +169,7 @@ if uploaded:
         )
 
     with st.expander("🔎 Debug: llamadas salientes filtradas y ordenadas"):
-        debug_cols = [
-            COL_DEAL_ID,
-            COL_CREATED,
-            "created_adjusted",
-            COL_DUE_DATE,
-            COL_SUBJECT,
-            "delta_sec"
-        ]
+        debug_cols = [COL_DEAL_ID, COL_CREATED, "created_adjusted", COL_DUE_DATE, COL_SUBJECT, "delta_sec"]
         if COL_OWNER in debug_calls.columns:
             debug_cols.append(COL_OWNER)
         st.dataframe(debug_calls[debug_cols], use_container_width=True)
