@@ -55,6 +55,7 @@ def normalize_name(value) -> str:
         return ""
     return " ".join(str(value).strip().lower().split())
 
+
 # Horario general de disponibilidad del equipo
 # Lunes a viernes: 09:00 - 20:00
 # Sábados: 12:30 - 20:00
@@ -69,18 +70,16 @@ TEAM_SCHEDULE = {
 }
 
 
-
 def is_holiday(ts: pd.Timestamp) -> bool:
     return ts.date() in HOLIDAYS_2026
 
 
-def get_day_windows(ts: pd.Timestamp, agent_name: str):
+def get_day_windows(ts: pd.Timestamp):
     if is_holiday(ts):
         return []
 
     weekday = ts.weekday()
-    schedule = get_schedule_for_agent(agent_name)
-    windows = schedule.get(weekday, [])
+    windows = TEAM_SCHEDULE.get(weekday, [])
 
     return [
         (
@@ -91,11 +90,11 @@ def get_day_windows(ts: pd.Timestamp, agent_name: str):
     ]
 
 
-def move_to_next_work_moment(ts: pd.Timestamp, agent_name: str) -> pd.Timestamp:
+def move_to_next_work_moment(ts: pd.Timestamp) -> pd.Timestamp:
     cur = ts
 
     for _ in range(370):
-        windows = get_day_windows(cur, agent_name)
+        windows = get_day_windows(cur)
 
         if not windows:
             cur = pd.Timestamp(cur.date()) + pd.Timedelta(days=1)
@@ -114,26 +113,26 @@ def move_to_next_work_moment(ts: pd.Timestamp, agent_name: str) -> pd.Timestamp:
     return ts
 
 
-def adjust_creation_time_for_agent(ts: pd.Timestamp, agent_name: str) -> pd.Timestamp:
+def adjust_creation_time_for_agent(ts: pd.Timestamp, agent_name: str = "") -> pd.Timestamp:
     if pd.isna(ts):
         return ts
-    return move_to_next_work_moment(ts, agent_name)
+    return move_to_next_work_moment(ts)
 
 
-def business_seconds_between(start_ts: pd.Timestamp, end_ts: pd.Timestamp, agent_name: str) -> float:
+def business_seconds_between(start_ts: pd.Timestamp, end_ts: pd.Timestamp, agent_name: str = "") -> float:
     if pd.isna(start_ts) or pd.isna(end_ts):
         return float("nan")
     if end_ts < start_ts:
         return float("nan")
 
-    cur = move_to_next_work_moment(start_ts, agent_name)
+    cur = move_to_next_work_moment(start_ts)
     total_seconds = 0.0
 
     for _ in range(370):
         if cur >= end_ts:
             break
 
-        windows = get_day_windows(cur, agent_name)
+        windows = get_day_windows(cur)
         if not windows:
             cur = pd.Timestamp(cur.date()) + pd.Timedelta(days=1)
             cur = cur.replace(hour=0, minute=0, second=0, microsecond=0)
