@@ -67,7 +67,7 @@ AGENT_SCHEDULES = {
         4: [(time(12, 30), time(20, 0))],
         5: [(time(12, 30), time(20, 0))],
     },
-    "solvo": {
+    "Yamile Vidal": {
         0: [(time(12, 30), time(20, 0))],
         1: [(time(12, 30), time(20, 0))],
         2: [(time(12, 30), time(20, 0))],
