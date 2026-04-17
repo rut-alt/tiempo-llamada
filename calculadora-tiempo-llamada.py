@@ -1,5 +1,4 @@
 import io
-import time
 import requests
 import pandas as pd
 import streamlit as st
@@ -11,8 +10,8 @@ st.write(
     "Sube un Excel exportado de Pipedrive (Actividades). "
     "La app calcula, para cada negocio, la PRIMERA actividad cuyo asunto contiene "
     "'Llamada saliente', y mide el tiempo desde la creación del negocio hasta esa primera llamada. "
-    "Si el tiempo supera 30 minutos, consulta el historial del deal para detectar un cambio de propietario "
-    "y recalcular desde la reasignación al agente que hizo la llamada."
+    "Si el tiempo supera 30 minutos, consulta el historial del deal para detectar si hubo una reasignación "
+    "inmediatamente después de la creación y antes de la primera llamada."
 )
 
 uploaded = st.file_uploader("Sube tu Excel (.xlsx)", type=["xlsx"])
@@ -50,17 +49,11 @@ def is_holiday(ts: pd.Timestamp) -> bool:
     return ts.date() in HOLIDAYS_2026
 
 
-def is_non_working_day(ts: pd.Timestamp) -> bool:
-    return ts.weekday() == 6 or is_holiday(ts)
-
-
 def next_valid_workday_start(ts: pd.Timestamp) -> pd.Timestamp:
     ts = ts.replace(hour=WORK_START_HOUR, minute=0, second=0, microsecond=0)
-
     while ts.weekday() == 6 or is_holiday(ts):
         ts = ts + pd.Timedelta(days=1)
         ts = ts.replace(hour=WORK_START_HOUR, minute=0, second=0, microsecond=0)
-
     return ts
 
 
@@ -69,27 +62,24 @@ def adjust_creation_time(ts: pd.Timestamp) -> pd.Timestamp:
     Ajusta la creación al horario operativo:
     - lunes a viernes: desde las 09:00
     - sábado: desde las 09:00 hasta las 18:00
-    - domingo: pasa al siguiente laborable a las 09:00
-    - festivo: pasa al siguiente laborable a las 09:00
+    - domingo y festivo: siguiente laborable a las 09:00
     """
     if pd.isna(ts):
         return ts
 
-    # Domingo o festivo -> siguiente laborable 09:00
-    if is_non_working_day(ts):
-        next_day = ts + pd.Timedelta(days=1)
-        return next_valid_workday_start(next_day)
+    # domingo o festivo
+    if ts.weekday() == 6 or is_holiday(ts):
+        return next_valid_workday_start(ts + pd.Timedelta(days=1))
 
-    # Sábado
+    # sábado
     if ts.weekday() == 5:
         if ts.hour < WORK_START_HOUR:
             return ts.replace(hour=WORK_START_HOUR, minute=0, second=0, microsecond=0)
         if ts.hour >= SATURDAY_END_HOUR:
-            next_day = ts + pd.Timedelta(days=1)
-            return next_valid_workday_start(next_day)
+            return next_valid_workday_start(ts + pd.Timedelta(days=1))
         return ts
 
-    # Lunes a viernes
+    # lunes a viernes
     if ts.hour < WORK_START_HOUR:
         return ts.replace(hour=WORK_START_HOUR, minute=0, second=0, microsecond=0)
 
@@ -125,31 +115,75 @@ def fetch_deal_flow(_api_token: str, _company_domain: str, deal_id: int) -> dict
     return r.json()
 
 
-def get_last_assignment_time_for_owner(flow_json: dict, call_owner: str, call_time: pd.Timestamp):
+def extract_relevant_flow_events(flow_json: dict, call_time: pd.Timestamp) -> pd.DataFrame:
     """
-    Busca en el flow la última asignación al agente que hace la llamada,
-    anterior o igual a la fecha de la llamada.
+    Extrae eventos relevantes anteriores o iguales a la primera llamada:
+    - dealChange user_id (cambio de propietario)
+    - activity
     """
-    target_owner = normalize_name(call_owner)
-    best_time = pd.NaT
+    rows = []
 
     for item in flow_json.get("data", []) or []:
-        if item.get("object") != "dealChange":
-            continue
-
+        obj = item.get("object")
         data = item.get("data", {}) or {}
-        if data.get("field_key") != "user_id":
-            continue
 
-        additional = data.get("additional_data", {}) or {}
-        new_owner = normalize_name(additional.get("new_value_formatted"))
-        log_time = pd.to_datetime(data.get("log_time"), errors="coerce")
+        event_time = pd.NaT
+        event_type = None
+        owner_to = None
 
-        if new_owner == target_owner and pd.notna(log_time) and log_time <= call_time:
-            if pd.isna(best_time) or log_time > best_time:
-                best_time = log_time
+        if obj == "dealChange" and data.get("field_key") == "user_id":
+            event_time = pd.to_datetime(data.get("log_time"), errors="coerce")
+            event_type = "owner_change"
+            owner_to = normalize_name((data.get("additional_data") or {}).get("new_value_formatted"))
 
-    return best_time
+        elif obj == "activity":
+            # probamos varios campos por seguridad
+            event_time = pd.to_datetime(
+                data.get("due_date") or data.get("marked_as_done_time") or data.get("add_time"),
+                errors="coerce"
+            )
+            event_type = "activity"
+
+        if pd.notna(event_time) and event_time <= call_time and event_type is not None:
+            rows.append({
+                "event_time": event_time,
+                "event_type": event_type,
+                "owner_to": owner_to,
+            })
+
+    if not rows:
+        return pd.DataFrame(columns=["event_time", "event_type", "owner_to"])
+
+    events = pd.DataFrame(rows).sort_values("event_time").reset_index(drop=True)
+    return events
+
+
+def get_start_time_real_from_flow(flow_json: dict, created_adjusted: pd.Timestamp, call_owner: str, call_time: pd.Timestamp):
+    """
+    Regla:
+    - Miramos los eventos del flow entre creación y primera llamada.
+    - Si el PRIMER evento relevante tras la creación es un cambio de propietario al agente que llama,
+      entonces start_time_real = esa reasignación.
+    - Si antes de ese cambio ya hubo una actividad, NO se reasigna y se usa created_adjusted.
+    - Si no hay nada relevante, se usa created_adjusted.
+    """
+    call_owner_norm = normalize_name(call_owner)
+    events = extract_relevant_flow_events(flow_json, call_time)
+
+    if len(events) == 0:
+        return created_adjusted, pd.NaT, "created_adjusted"
+
+    # solo eventos desde la creación ajustada hasta la llamada
+    events = events[events["event_time"] >= created_adjusted].copy()
+    if len(events) == 0:
+        return created_adjusted, pd.NaT, "created_adjusted"
+
+    first_event = events.iloc[0]
+
+    if first_event["event_type"] == "owner_change" and first_event["owner_to"] == call_owner_norm:
+        return first_event["event_time"], first_event["event_time"], "owner_reassignment_immediate"
+
+    return created_adjusted, pd.NaT, "created_adjusted"
 
 
 def compute_first_outbound_call(df: pd.DataFrame):
@@ -176,10 +210,6 @@ def compute_first_outbound_call(df: pd.DataFrame):
     # Solo posteriores
     df = df[df["delta_sec_base"] >= 0].copy()
 
-    # Filtro opcional >= 1 día en el tiempo base
-    if apply_filter_1day:
-        df = df[df["delta_sec_base"] < ONE_DAY_SECONDS].copy()
-
     # Orden cronológico por lead
     df = df.sort_values([COL_DEAL_ID, COL_DUE_DATE, COL_SUBJECT]).copy()
 
@@ -193,7 +223,6 @@ def compute_first_outbound_call(df: pd.DataFrame):
         COL_OWNER: "call_owner"
     })
 
-    # Resolver start_time real
     real_start_times = []
     start_sources = []
     reassignment_times = []
@@ -218,11 +247,12 @@ def compute_first_outbound_call(df: pd.DataFrame):
             checked_flow = True
             try:
                 flow_json = fetch_deal_flow(api_token, company_domain, deal_id)
-                reassignment_time = get_last_assignment_time_for_owner(flow_json, call_owner, first_call_time)
-
-                if pd.notna(reassignment_time):
-                    start_time_real = reassignment_time
-                    start_source = "owner_reassignment"
+                start_time_real, reassignment_time, start_source = get_start_time_real_from_flow(
+                    flow_json=flow_json,
+                    created_adjusted=created_adjusted,
+                    call_owner=call_owner,
+                    call_time=first_call_time
+                )
             except Exception:
                 pass
 
@@ -238,11 +268,11 @@ def compute_first_outbound_call(df: pd.DataFrame):
     first_calls["start_source"] = start_sources
     first_calls["flow_checked"] = flow_checked
 
-    # SLA real final
+    # SLA final
     first_calls["delta_sec"] = (first_calls["first_call_time"] - first_calls["start_time_real"]).dt.total_seconds()
     first_calls = first_calls[first_calls["delta_sec"] >= 0].copy()
 
-    # Filtro opcional >= 1 día sobre tiempo final
+    # Filtro opcional >= 1 día
     if apply_filter_1day:
         first_calls = first_calls[first_calls["delta_sec"] < ONE_DAY_SECONDS].copy()
 
