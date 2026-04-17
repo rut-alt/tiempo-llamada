@@ -59,7 +59,7 @@ def normalize_name(value) -> str:
 # Horarios por agente
 AGENT_SCHEDULES = {
     # Solvo
-    "jose luis vicuña": {
+    "Jose Luis Vicuña": {
         0: [(time(12, 30), time(20, 0))],
         1: [(time(12, 30), time(20, 0))],
         2: [(time(12, 30), time(20, 0))],
@@ -75,25 +75,51 @@ AGENT_SCHEDULES = {
         4: [(time(12, 30), time(20, 0))],
         5: [(time(12, 30), time(20, 0))],
     },
-
+    "Andres Felipe Velasquez Salcedo": {
+        0: [(time(12, 30), time(20, 0))],
+        1: [(time(12, 30), time(20, 0))],
+        2: [(time(12, 30), time(20, 0))],
+        3: [(time(12, 30), time(20, 0))],
+        4: [(time(12, 30), time(20, 0))],
+        5: [(time(12, 30), time(20, 0))],
+    },
+    "Emilse Benavidez": {
+        0: [(time(12, 30), time(20, 0))],
+        1: [(time(12, 30), time(20, 0))],
+        2: [(time(12, 30), time(20, 0))],
+        3: [(time(12, 30), time(20, 0))],
+        4: [(time(12, 30), time(20, 0))],
+        5: [(time(12, 30), time(20, 0))],
+    },
+    
+    "Lizeth Rojas": {
+        0: [(time(12, 30), time(20, 0))],
+        1: [(time(12, 30), time(20, 0))],
+        2: [(time(12, 30), time(20, 0))],
+        3: [(time(12, 30), time(20, 0))],
+        4: [(time(12, 30), time(20, 0))],
+        5: [(time(12, 30), time(20, 0))],
+    },
+    "Viviana Balanta": {
+        0: [(time(12, 30), time(20, 0))],
+        1: [(time(12, 30), time(20, 0))],
+        2: [(time(12, 30), time(20, 0))],
+        3: [(time(12, 30), time(20, 0))],
+        4: [(time(12, 30), time(20, 0))],
+        5: [(time(12, 30), time(20, 0))],
+    },
+    
     # Toñi
-    "toñi": {
+    "TOÑI": {
         0: [(time(9, 0), time(14, 0))],
         1: [(time(9, 0), time(14, 0))],
         2: [(time(9, 0), time(14, 0))],
         3: [(time(9, 0), time(14, 0))],
         4: [(time(9, 0), time(14, 0))],
     },
-    "toni": {
-        0: [(time(9, 0), time(14, 0))],
-        1: [(time(9, 0), time(14, 0))],
-        2: [(time(9, 0), time(14, 0))],
-        3: [(time(9, 0), time(14, 0))],
-        4: [(time(9, 0), time(14, 0))],
-    },
-
+    
     # Meri
-    "meri": {
+    "Meri": {
         0: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
         1: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
         2: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
@@ -102,35 +128,21 @@ AGENT_SCHEDULES = {
     },
 
     # Isabel, Carolina y Jesús
-    "isabel": {
+    "Isabel Tortosa Vivas": {
         0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         4: [(time(9, 0), time(14, 30))],
     },
-    "isabel tortosa vivas": {
+    "Diana Carolina": {
         0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         4: [(time(9, 0), time(14, 30))],
     },
-    "carolina": {
-        0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        4: [(time(9, 0), time(14, 30))],
-    },
-    "maría carolina garcia álvarez": {
-        0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        4: [(time(9, 0), time(14, 30))],
-    },
-    "jesús": {
+    "Jesús": {
         0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
