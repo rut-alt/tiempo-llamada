@@ -4,19 +4,25 @@ import pandas as pd
 import streamlit as st
 from datetime import time
 
-st.set_page_config(page_title="Primera llamada por lead (Pipedrive)", layout="wide")
+st.set_page_config(page_title="Tiempo hasta el primer contacto por lead (Pipedrive)", layout="wide")
 
-st.title("📞 Tiempo hasta la primera llamada saliente por lead")
+st.title("📞 Tiempo hasta el primer contacto por lead")
 st.write(
     "Sube un Excel exportado de Pipedrive (Actividades). "
-    "La app calcula, para cada negocio, la PRIMERA actividad cuyo asunto contiene "
-    "'Llamada saliente', y mide el tiempo hasta esa primera llamada. "
+    "La app calcula, para cada negocio, la PRIMERA actividad de contacto y mide el tiempo hasta ese primer contacto. "
+    "Puedes elegir entre medir solo la primera llamada saliente o el primer contacto (llamada + WhatsApp). "
     "Si el tiempo base supera 30 minutos, consulta el flow del deal y solo usa la reasignación "
-    "si el primer evento relevante tras la creación es un cambio de propietario al agente que llama."
+    "si el primer evento relevante tras la creación es un cambio de propietario al agente que hace ese primer contacto."
 )
 
 uploaded = st.file_uploader("Sube tu Excel (.xlsx)", type=["xlsx"])
-apply_filter_1day = st.checkbox("Excluir primeras llamadas con 1 día o más de diferencia", value=False)
+apply_filter_1day = st.checkbox("Excluir primeros contactos con 1 día o más de diferencia", value=False)
+
+contact_mode = st.radio(
+    "Qué quieres medir",
+    ["Primera llamada saliente", "Primer contacto (llamada + WhatsApp)"],
+    horizontal=True,
+)
 
 st.subheader("🔐 Configuración API Pipedrive")
 api_token = st.text_input("API token", type="password")
@@ -78,6 +84,13 @@ AGENT_SCHEDULES = {
         3: [(time(9, 0), time(14, 0))],
         4: [(time(9, 0), time(14, 0))],
     },
+    "toni": {
+        0: [(time(9, 0), time(14, 0))],
+        1: [(time(9, 0), time(14, 0))],
+        2: [(time(9, 0), time(14, 0))],
+        3: [(time(9, 0), time(14, 0))],
+        4: [(time(9, 0), time(14, 0))],
+    },
 
     # Meri
     "meri": {
@@ -104,6 +117,13 @@ AGENT_SCHEDULES = {
         4: [(time(9, 0), time(14, 30))],
     },
     "carolina": {
+        0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        4: [(time(9, 0), time(14, 30))],
+    },
+    "maría carolina garcia álvarez": {
         0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
@@ -267,7 +287,7 @@ def fetch_deal_flow(_api_token: str, _company_domain: str, deal_id: int) -> dict
     return r.json()
 
 
-def extract_relevant_flow_events(flow_json: dict, call_time: pd.Timestamp) -> pd.DataFrame:
+def extract_relevant_flow_events(flow_json: dict, contact_time: pd.Timestamp) -> pd.DataFrame:
     rows = []
 
     for item in flow_json.get("data", []) or []:
@@ -291,7 +311,7 @@ def extract_relevant_flow_events(flow_json: dict, call_time: pd.Timestamp) -> pd
             event_time = pd.to_datetime(due_date or marked_done or add_time, errors="coerce")
             event_type = "activity"
 
-        if pd.notna(event_time) and event_time <= call_time and event_type is not None:
+        if pd.notna(event_time) and event_time <= contact_time and event_type is not None:
             rows.append({
                 "event_time": event_time,
                 "event_type": event_type,
@@ -305,14 +325,14 @@ def extract_relevant_flow_events(flow_json: dict, call_time: pd.Timestamp) -> pd
     return events
 
 
-def get_start_time_real_from_flow(flow_json: dict, created_adjusted: pd.Timestamp, call_owner: str, call_time: pd.Timestamp):
+def get_start_time_real_from_flow(flow_json: dict, created_adjusted: pd.Timestamp, contact_owner: str, contact_time: pd.Timestamp):
     """
     Solo reasigna si el primer evento relevante tras la creación ajustada
-    es un cambio de propietario al agente que hace la llamada.
+    es un cambio de propietario al agente que hace el primer contacto.
     Si el primer evento relevante es una actividad, mantiene created_adjusted.
     """
-    call_owner_norm = normalize_name(call_owner)
-    events = extract_relevant_flow_events(flow_json, call_time)
+    contact_owner_norm = normalize_name(contact_owner)
+    events = extract_relevant_flow_events(flow_json, contact_time)
 
     if len(events) == 0:
         return created_adjusted, pd.NaT, "created_adjusted"
@@ -323,13 +343,43 @@ def get_start_time_real_from_flow(flow_json: dict, created_adjusted: pd.Timestam
 
     first_event = events.iloc[0]
 
-    if first_event["event_type"] == "owner_change" and first_event["owner_to"] == call_owner_norm:
+    if first_event["event_type"] == "owner_change" and first_event["owner_to"] == contact_owner_norm:
         return first_event["event_time"], first_event["event_time"], "owner_reassignment_immediate"
 
     return created_adjusted, pd.NaT, "created_adjusted"
 
 
-def compute_first_outbound_call(df: pd.DataFrame, apply_filter_1day: bool):
+def get_activity_filter_pattern(selected_mode: str) -> str:
+    if selected_mode == "Primera llamada saliente":
+        return r"llamada saliente"
+    return r"llamada saliente|whatsapp chat"
+
+
+def get_result_labels(selected_mode: str):
+    if selected_mode == "Primera llamada saliente":
+        return {
+            "title": "✅ Primera llamada saliente por lead único",
+            "metric_count": "Leads únicos con 1ª llamada",
+            "time_col": "tiempo_hasta_primera_llamada",
+            "base_col": "tiempo_base_desde_creacion",
+            "subject_col": "first_contact_subject",
+            "time_display": "Media total",
+            "median_display": "Mediana total",
+            "download_name": "primera_llamada_saliente_por_lead_unico.xlsx",
+        }
+    return {
+        "title": "✅ Primer contacto por lead único",
+        "metric_count": "Leads únicos con 1er contacto",
+        "time_col": "tiempo_hasta_primer_contacto",
+        "base_col": "tiempo_base_desde_creacion",
+        "subject_col": "first_contact_subject",
+        "time_display": "Media total",
+        "median_display": "Mediana total",
+        "download_name": "primer_contacto_por_lead_unico.xlsx",
+    }
+
+
+def compute_first_contact(df: pd.DataFrame, apply_filter_1day: bool, selected_mode: str):
     df = df.copy()
 
     df[COL_DEAL_ID] = pd.to_numeric(df[COL_DEAL_ID], errors="coerce").astype("Int64")
@@ -338,43 +388,34 @@ def compute_first_outbound_call(df: pd.DataFrame, apply_filter_1day: bool):
     df[COL_SUBJECT] = df[COL_SUBJECT].astype(str).str.strip()
 
     df = df.dropna(subset=[COL_DEAL_ID, COL_CREATED, COL_DUE_DATE, COL_SUBJECT]).copy()
-    if contact_mode == "Primera llamada saliente":
-    df = df[df[COL_SUBJECT].str.contains("llamada saliente", case=False, na=False)].copy()
-    else:
-    df = df[
-        df[COL_SUBJECT].str.contains("llamada saliente|whatsapp chat", case=False, na=False)
-    ].copy()
 
-    # El agente que llama
-    df["call_owner"] = df[COL_OWNER]
+    pattern = get_activity_filter_pattern(selected_mode)
+    df = df[df[COL_SUBJECT].str.contains(pattern, case=False, na=False)].copy()
 
-    # Ajuste inicial según horario del agente
+    df["contact_owner"] = df[COL_OWNER]
+
     df["created_adjusted"] = df.apply(
-        lambda row: adjust_creation_time_for_agent(row[COL_CREATED], row["call_owner"]),
+        lambda row: adjust_creation_time_for_agent(row[COL_CREATED], row["contact_owner"]),
         axis=1
     )
 
-    # Tiempo base en horas hábiles del agente
     df["delta_sec_base"] = df.apply(
         lambda row: business_seconds_between(
             row["created_adjusted"],
             row[COL_DUE_DATE],
-            row["call_owner"]
+            row["contact_owner"]
         ),
         axis=1
     )
 
     df = df[df["delta_sec_base"] >= 0].copy()
-
-    # Orden cronológico por lead
     df = df.sort_values([COL_DEAL_ID, COL_DUE_DATE, COL_SUBJECT]).copy()
 
-    # Primera llamada por lead único
-    first_calls = df.drop_duplicates(subset=[COL_DEAL_ID], keep="first").copy()
+    first_contacts = df.drop_duplicates(subset=[COL_DEAL_ID], keep="first").copy()
 
-    first_calls = first_calls.rename(columns={
-        COL_DUE_DATE: "first_call_time",
-        COL_SUBJECT: "first_call_subject",
+    first_contacts = first_contacts.rename(columns={
+        COL_DUE_DATE: "first_contact_time",
+        COL_SUBJECT: "first_contact_subject",
     })
 
     real_start_times = []
@@ -383,14 +424,14 @@ def compute_first_outbound_call(df: pd.DataFrame, apply_filter_1day: bool):
     flow_checked = []
 
     progress = st.progress(0)
-    total_rows = len(first_calls)
+    total_rows = len(first_contacts)
 
-    for i, (_, row) in enumerate(first_calls.iterrows(), start=1):
+    for i, (_, row) in enumerate(first_contacts.iterrows(), start=1):
         created_adjusted = row["created_adjusted"]
-        first_call_time = row["first_call_time"]
+        first_contact_time = row["first_contact_time"]
         delta_sec_base = row["delta_sec_base"]
         deal_id = int(row[COL_DEAL_ID])
-        call_owner = row["call_owner"]
+        contact_owner = row["contact_owner"]
 
         start_time_real = created_adjusted
         start_source = "created_adjusted"
@@ -404,8 +445,8 @@ def compute_first_outbound_call(df: pd.DataFrame, apply_filter_1day: bool):
                 start_time_real, reassignment_time, start_source = get_start_time_real_from_flow(
                     flow_json=flow_json,
                     created_adjusted=created_adjusted,
-                    call_owner=call_owner,
-                    call_time=first_call_time
+                    contact_owner=contact_owner,
+                    contact_time=first_contact_time
                 )
             except Exception:
                 pass
@@ -417,25 +458,24 @@ def compute_first_outbound_call(df: pd.DataFrame, apply_filter_1day: bool):
 
         progress.progress(i / total_rows if total_rows else 1)
 
-    first_calls["reassignment_time"] = reassignment_times
-    first_calls["start_time_real"] = real_start_times
-    first_calls["start_source"] = start_sources
-    first_calls["flow_checked"] = flow_checked
+    first_contacts["reassignment_time"] = reassignment_times
+    first_contacts["start_time_real"] = real_start_times
+    first_contacts["start_source"] = start_sources
+    first_contacts["flow_checked"] = flow_checked
 
-    # Tiempo final en horas hábiles del agente
-    first_calls["delta_sec"] = first_calls.apply(
+    first_contacts["delta_sec"] = first_contacts.apply(
         lambda row: business_seconds_between(
             row["start_time_real"],
-            row["first_call_time"],
-            row["call_owner"]
+            row["first_contact_time"],
+            row["contact_owner"]
         ),
         axis=1
     )
 
-    first_calls = first_calls[first_calls["delta_sec"] >= 0].copy()
+    first_contacts = first_contacts[first_contacts["delta_sec"] >= 0].copy()
 
     if apply_filter_1day:
-        first_calls = first_calls[first_calls["delta_sec"] < ONE_DAY_SECONDS].copy()
+        first_contacts = first_contacts[first_contacts["delta_sec"] < ONE_DAY_SECONDS].copy()
 
     keep_cols = [
         COL_DEAL_ID,
@@ -444,22 +484,27 @@ def compute_first_outbound_call(df: pd.DataFrame, apply_filter_1day: bool):
         "reassignment_time",
         "start_time_real",
         "start_source",
-        "first_call_time",
-        "first_call_subject",
+        "first_contact_time",
+        "first_contact_subject",
         "delta_sec_base",
         "delta_sec",
         "flow_checked",
-        "call_owner",
+        "contact_owner",
     ]
 
-    res = first_calls[keep_cols].copy()
+    res = first_contacts[keep_cols].copy()
     res["tiempo_base_desde_creacion"] = res["delta_sec_base"].apply(format_duration_exact)
-    res["tiempo_hasta_primera_llamada"] = res["delta_sec"].apply(format_duration_exact)
+
+    if selected_mode == "Primera llamada saliente":
+        res["tiempo_hasta_primera_llamada"] = res["delta_sec"].apply(format_duration_exact)
+    else:
+        res["tiempo_hasta_primer_contacto"] = res["delta_sec"].apply(format_duration_exact)
+
     res = res.sort_values(COL_CREATED).reset_index(drop=True)
 
     if len(res) > 0:
         agent_stats = (
-            res.groupby("call_owner", dropna=False)
+            res.groupby("contact_owner", dropna=False)
             .agg(
                 leads_unicos=(COL_DEAL_ID, "count"),
                 media_seg=("delta_sec", "mean"),
@@ -482,10 +527,10 @@ def compute_first_outbound_call(df: pd.DataFrame, apply_filter_1day: bool):
 def to_excel_bytes(res: pd.DataFrame, agent_stats: pd.DataFrame, debug_calls: pd.DataFrame) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        res.to_excel(writer, index=False, sheet_name="primera_llamada_por_lead")
+        res.to_excel(writer, index=False, sheet_name="primer_contacto_por_lead")
         if len(agent_stats) > 0:
             agent_stats.to_excel(writer, index=False, sheet_name="resumen_por_agente")
-        debug_calls.to_excel(writer, index=False, sheet_name="debug_llamadas_filtradas")
+        debug_calls.to_excel(writer, index=False, sheet_name="debug_contactos_filtrados")
     return output.getvalue()
 
 
@@ -504,28 +549,33 @@ if uploaded:
         st.write("Columnas detectadas:", list(df.columns))
         st.stop()
 
-    res, agent_stats, media_total, mediana_total, debug_calls = compute_first_outbound_call(df, apply_filter_1day)
+    labels = get_result_labels(contact_mode)
+    res, agent_stats, media_total, mediana_total, debug_calls = compute_first_contact(
+        df,
+        apply_filter_1day,
+        contact_mode
+    )
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("Leads únicos con 1ª llamada", f"{len(res):,}".replace(",", "."))
-    col2.metric("Media total", media_total)
-    col3.metric("Mediana total", mediana_total)
+    col1.metric(labels["metric_count"], f"{len(res):,}".replace(",", "."))
+    col2.metric(labels["time_display"], media_total)
+    col3.metric(labels["median_display"], mediana_total)
 
-    st.subheader("✅ Primera llamada saliente por lead único")
+    st.subheader(labels["title"])
     st.dataframe(res, use_container_width=True)
 
     if len(agent_stats) > 0:
         st.subheader("👤 Resumen por agente (sobre leads únicos)")
         st.dataframe(
-            agent_stats[["call_owner", "leads_unicos", "media", "mediana"]],
+            agent_stats[["contact_owner", "leads_unicos", "media", "mediana"]],
             use_container_width=True
         )
 
-    with st.expander("🔎 Debug: llamadas salientes filtradas y ordenadas"):
+    with st.expander("🔎 Debug: contactos filtrados y ordenados"):
         debug_cols = [
             COL_DEAL_ID,
             COL_CREATED,
-            "call_owner",
+            "contact_owner",
             "created_adjusted",
             COL_DUE_DATE,
             COL_SUBJECT,
@@ -537,8 +587,8 @@ if uploaded:
     st.download_button(
         "⬇️ Descargar Excel con resultados",
         data=xlsx_bytes,
-        file_name="primera_llamada_saliente_por_lead_unico.xlsx",
+        file_name=labels["download_name"],
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 else:
-    st.info("Sube un Excel para calcular la primera llamada saliente por lead único.")
+    st.info("Sube un Excel para calcular el primer contacto por lead único.")
