@@ -57,9 +57,10 @@ def normalize_name(value) -> str:
 
 
 # Horarios por agente
+# IMPORTANTE: las claves van normalizadas en minúsculas
 AGENT_SCHEDULES = {
     # Solvo
-    "Jose Luis Vicuña": {
+    "jose luis vicuña": {
         0: [(time(12, 30), time(20, 0))],
         1: [(time(12, 30), time(20, 0))],
         2: [(time(12, 30), time(20, 0))],
@@ -67,7 +68,7 @@ AGENT_SCHEDULES = {
         4: [(time(12, 30), time(20, 0))],
         5: [(time(12, 30), time(20, 0))],
     },
-    "Yamile Vidal": {
+    "yamile vidal": {
         0: [(time(12, 30), time(20, 0))],
         1: [(time(12, 30), time(20, 0))],
         2: [(time(12, 30), time(20, 0))],
@@ -75,7 +76,7 @@ AGENT_SCHEDULES = {
         4: [(time(12, 30), time(20, 0))],
         5: [(time(12, 30), time(20, 0))],
     },
-    "Andres Felipe Velasquez Salcedo": {
+    "andres felipe velasquez salcedo": {
         0: [(time(12, 30), time(20, 0))],
         1: [(time(12, 30), time(20, 0))],
         2: [(time(12, 30), time(20, 0))],
@@ -83,7 +84,7 @@ AGENT_SCHEDULES = {
         4: [(time(12, 30), time(20, 0))],
         5: [(time(12, 30), time(20, 0))],
     },
-    "Emilse Benavidez": {
+    "emilse benavidez": {
         0: [(time(12, 30), time(20, 0))],
         1: [(time(12, 30), time(20, 0))],
         2: [(time(12, 30), time(20, 0))],
@@ -91,8 +92,7 @@ AGENT_SCHEDULES = {
         4: [(time(12, 30), time(20, 0))],
         5: [(time(12, 30), time(20, 0))],
     },
-    
-    "Lizeth Rojas": {
+    "lizeth rojas": {
         0: [(time(12, 30), time(20, 0))],
         1: [(time(12, 30), time(20, 0))],
         2: [(time(12, 30), time(20, 0))],
@@ -100,7 +100,7 @@ AGENT_SCHEDULES = {
         4: [(time(12, 30), time(20, 0))],
         5: [(time(12, 30), time(20, 0))],
     },
-    "Viviana Balanta": {
+    "viviana balanta": {
         0: [(time(12, 30), time(20, 0))],
         1: [(time(12, 30), time(20, 0))],
         2: [(time(12, 30), time(20, 0))],
@@ -108,18 +108,25 @@ AGENT_SCHEDULES = {
         4: [(time(12, 30), time(20, 0))],
         5: [(time(12, 30), time(20, 0))],
     },
-    
+
     # Toñi
-    "TOÑI": {
+    "toñi": {
         0: [(time(9, 0), time(14, 0))],
         1: [(time(9, 0), time(14, 0))],
         2: [(time(9, 0), time(14, 0))],
         3: [(time(9, 0), time(14, 0))],
         4: [(time(9, 0), time(14, 0))],
     },
-    
+    "toni": {
+        0: [(time(9, 0), time(14, 0))],
+        1: [(time(9, 0), time(14, 0))],
+        2: [(time(9, 0), time(14, 0))],
+        3: [(time(9, 0), time(14, 0))],
+        4: [(time(9, 0), time(14, 0))],
+    },
+
     # Meri
-    "Meri": {
+    "meri": {
         0: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
         1: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
         2: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
@@ -128,21 +135,35 @@ AGENT_SCHEDULES = {
     },
 
     # Isabel, Carolina y Jesús
-    "Isabel Tortosa Vivas": {
+    "isabel tortosa vivas": {
         0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         4: [(time(9, 0), time(14, 30))],
     },
-    "Diana Carolina": {
+    "diana carolina": {
         0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         4: [(time(9, 0), time(14, 30))],
     },
-    "Jesús": {
+    "carolina": {
+        0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        4: [(time(9, 0), time(14, 30))],
+    },
+    "jesús": {
+        0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        4: [(time(9, 0), time(14, 30))],
+    },
+    "jesus": {
         0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
         2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
@@ -167,7 +188,7 @@ def get_schedule_for_agent(agent_name: str):
         return AGENT_SCHEDULES[norm]
 
     if "isabel" in norm:
-        return AGENT_SCHEDULES["isabel"]
+        return AGENT_SCHEDULES["isabel tortosa vivas"]
     if "carolina" in norm:
         return AGENT_SCHEDULES["carolina"]
     if "jesús" in norm or "jesus" in norm:
@@ -178,6 +199,16 @@ def get_schedule_for_agent(agent_name: str):
         return AGENT_SCHEDULES["meri"]
     if "jose luis vicuña" in norm or "solvo" in norm:
         return AGENT_SCHEDULES["jose luis vicuña"]
+    if "yamile" in norm:
+        return AGENT_SCHEDULES["yamile vidal"]
+    if "andres felipe" in norm:
+        return AGENT_SCHEDULES["andres felipe velasquez salcedo"]
+    if "emilse" in norm:
+        return AGENT_SCHEDULES["emilse benavidez"]
+    if "lizeth" in norm:
+        return AGENT_SCHEDULES["lizeth rojas"]
+    if "viviana" in norm:
+        return AGENT_SCHEDULES["viviana balanta"]
 
     return DEFAULT_SCHEDULE
 
@@ -603,4 +634,4 @@ if uploaded:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 else:
-    st.info("Sube un Excel para calcular el primer contacto por lead único.")
+    st.info("Sube un Excel para calcular el primer contacto por lead único.") hay algo roto? es que he cambiado los horarios, que lostenias mal, corrigelo mantiendolo todo igual
