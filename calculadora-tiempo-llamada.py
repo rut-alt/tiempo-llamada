@@ -13,9 +13,8 @@ st.title("📞 Primera llamada por asignación usando Flow de Pipedrive")
 st.write(
     "Sube un Excel para obtener los negocios a analizar. "
     "La app usa el flow API de Pipedrive como fuente de verdad para reconstruir "
-    "creación del negocio, reasignaciones y actividades, "
-    "y calcula la primera llamada/contacto tras cada asignación. "
-    "Además, excluye los deals que salen de Lead a otra etapa sin contacto previo."
+    "creación del negocio, reaperturas, reasignaciones y actividades, "
+    "y calcula la primera llamada/contacto tras cada tramo operativo."
 )
 
 uploaded = st.file_uploader("Sube tu Excel (.xlsx)", type=["xlsx"])
@@ -59,12 +58,12 @@ HOLIDAYS_2026 = {
 }
 
 TEAM_SCHEDULE = {
-    0: [(time(9, 0), time(20, 0))],    # lunes
-    1: [(time(9, 0), time(20, 0))],    # martes
-    2: [(time(9, 0), time(20, 0))],    # miércoles
-    3: [(time(9, 0), time(20, 0))],    # jueves
-    4: [(time(9, 0), time(20, 0))],    # viernes
-    5: [(time(12, 30), time(20, 0))],  # sábado
+    0: [(time(9, 0), time(20, 0))],
+    1: [(time(9, 0), time(20, 0))],
+    2: [(time(9, 0), time(20, 0))],
+    3: [(time(9, 0), time(20, 0))],
+    4: [(time(9, 0), time(20, 0))],
+    5: [(time(12, 30), time(20, 0))],
 }
 
 
@@ -84,10 +83,6 @@ def to_madrid_ts(value):
 
 
 def get_activity_datetime_local(activity_data: dict) -> pd.Timestamp:
-    """
-    Para activities del flow:
-    due_date + due_time se interpretan en UTC y se convierten a Europe/Madrid.
-    """
     due_date = clean_text(activity_data.get("due_date"))
     due_time = clean_text(activity_data.get("due_time"))
 
@@ -232,16 +227,16 @@ def get_contact_pattern(selected_mode: str) -> str:
 def get_result_labels(selected_mode: str):
     if selected_mode == "Primera llamada saliente":
         return {
-            "title": "✅ Primera llamada saliente por asignación",
-            "metric_count": "Asignaciones con 1ª llamada",
+            "title": "✅ Primera llamada saliente por tramo operativo",
+            "metric_count": "Tramos con 1ª llamada",
             "time_col": "tiempo_hasta_primera_llamada",
-            "download_name": "primera_llamada_por_asignacion_flow.xlsx",
+            "download_name": "primera_llamada_por_tramo_flow.xlsx",
         }
     return {
-        "title": "✅ Primer contacto por asignación",
-        "metric_count": "Asignaciones con 1er contacto",
+        "title": "✅ Primer contacto por tramo operativo",
+        "metric_count": "Tramos con 1er contacto",
         "time_col": "tiempo_hasta_primer_contacto",
-        "download_name": "primer_contacto_por_asignacion_flow.xlsx",
+        "download_name": "primer_contacto_por_tramo_flow.xlsx",
     }
 
 
@@ -294,11 +289,38 @@ def extract_owner_changes(flow_json: dict) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("event_time").reset_index(drop=True)
 
 
+def extract_reopen_events(flow_json: dict) -> pd.DataFrame:
+    """
+    Detecta reaperturas reales: lost -> open / Perdido -> Abierto
+    """
+    rows = []
+
+    for item in flow_json.get("data", []) or []:
+        if item.get("object") != "dealChange":
+            continue
+
+        data = item.get("data", {}) or {}
+        if data.get("field_key") != "status":
+            continue
+
+        old_value = clean_text(data.get("old_value")).lower()
+        new_value = clean_text(data.get("new_value")).lower()
+
+        if old_value == "lost" and new_value == "open":
+            event_time = to_madrid_ts(data.get("log_time"))
+            if pd.notna(event_time):
+                rows.append({
+                    "event_time": event_time,
+                    "event_type": "reopened",
+                })
+
+    if not rows:
+        return pd.DataFrame(columns=["event_time", "event_type"])
+
+    return pd.DataFrame(rows).sort_values("event_time").reset_index(drop=True)
+
+
 def extract_initial_owner_from_flow(flow_json: dict) -> str:
-    """
-    Intenta inferir el owner inicial del deal cuando no hay dealChange de user_id.
-    Usa la primera actividad con owner_name.
-    """
     candidates = []
 
     for item in flow_json.get("data", []) or []:
@@ -330,9 +352,6 @@ def extract_initial_owner_from_flow(flow_json: dict) -> str:
 
 
 def extract_first_lead_to_advanced_stage(flow_json: dict):
-    """
-    Devuelve la primera vez que un deal sale de Lead hacia cualquier otra etapa.
-    """
     changes = []
 
     for item in flow_json.get("data", []) or []:
@@ -424,6 +443,7 @@ def build_assignment_segments(
     deal_id: int,
     deal_created: pd.Timestamp,
     owner_changes: pd.DataFrame,
+    reopen_events: pd.DataFrame,
     initial_owner: str = ""
 ) -> pd.DataFrame:
     rows = []
@@ -450,6 +470,26 @@ def build_assignment_segments(
             "agent_owner": ch["new_owner"],
         })
 
+    for _, rp in reopen_events.iterrows():
+        rp_time = rp["event_time"]
+
+        owner_at_reopen = ""
+        prior_changes = owner_changes[owner_changes["event_time"] <= rp_time].copy()
+        if len(prior_changes) > 0:
+            owner_at_reopen = clean_text(prior_changes.iloc[-1]["new_owner"])
+        elif initial_owner:
+            owner_at_reopen = initial_owner
+
+        if owner_at_reopen:
+            rows.append({
+                "deal_id": deal_id,
+                "segment_start": rp_time,
+                "segment_source": "reopened",
+                "from_owner": "",
+                "to_owner": owner_at_reopen,
+                "agent_owner": owner_at_reopen,
+            })
+
     if not rows:
         return pd.DataFrame(columns=[
             "deal_id", "segment_start", "segment_source",
@@ -458,12 +498,43 @@ def build_assignment_segments(
 
     seg = pd.DataFrame(rows).sort_values("segment_start").reset_index(drop=True)
 
-    seg["prev_owner"] = seg["agent_owner"].shift(1)
-    seg = seg[(seg.index == 0) | (seg["agent_owner"] != seg["prev_owner"])].copy()
-    seg = seg.drop(columns=["prev_owner"]).reset_index(drop=True)
+    # quitar duplicados exactos por inicio + owner + source
+    seg = seg.drop_duplicates(subset=["segment_start", "agent_owner", "segment_source"]).copy()
+
+    # si hay varios eventos casi simultáneos, nos quedamos con el más operativo
+    source_priority = {
+        "reopened": 3,
+        "owner_reassignment": 2,
+        "initial_owner_inferred": 1,
+    }
+    seg["source_priority"] = seg["segment_source"].map(source_priority).fillna(0)
+
+    seg = seg.sort_values(["segment_start", "source_priority"], ascending=[True, False]).reset_index(drop=True)
+
+    # quitar duplicados consecutivos del mismo owner si el inicio es el mismo o casi mismo momento lógico
+    cleaned_rows = []
+    for _, row in seg.iterrows():
+        if not cleaned_rows:
+            cleaned_rows.append(row.to_dict())
+            continue
+
+        prev = cleaned_rows[-1]
+        same_owner = clean_text(prev["agent_owner"]) == clean_text(row["agent_owner"])
+        same_start = pd.Timestamp(prev["segment_start"]) == pd.Timestamp(row["segment_start"])
+
+        if same_owner and same_start:
+            if row["source_priority"] > prev["source_priority"]:
+                cleaned_rows[-1] = row.to_dict()
+        else:
+            cleaned_rows.append(row.to_dict())
+
+    seg = pd.DataFrame(cleaned_rows).sort_values("segment_start").reset_index(drop=True)
 
     seg["segment_end"] = seg["segment_start"].shift(-1)
     seg["deal_created"] = deal_created
+
+    if "source_priority" in seg.columns:
+        seg = seg.drop(columns=["source_priority"])
 
     return seg
 
@@ -548,6 +619,7 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
 
         deal_created = extract_created_time_from_flow(flow_json, fallback_created)
         owner_changes = extract_owner_changes(flow_json)
+        reopen_events = extract_reopen_events(flow_json)
         flow_activities = extract_flow_activities(flow_json, selected_mode)
 
         first_stage_change_time, old_stage, new_stage = extract_first_lead_to_advanced_stage(flow_json)
@@ -573,6 +645,7 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
             deal_id=deal_id,
             deal_created=deal_created,
             owner_changes=owner_changes,
+            reopen_events=reopen_events,
             initial_owner=initial_owner
         )
 
