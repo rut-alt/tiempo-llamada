@@ -14,7 +14,8 @@ st.write(
     "Sube un Excel para obtener los negocios a analizar. "
     "La app usa el flow API de Pipedrive como fuente de verdad para reconstruir "
     "creación del negocio, reasignaciones y actividades, "
-    "y calcula la primera llamada/contacto tras cada asignación."
+    "y calcula la primera llamada/contacto tras cada asignación. "
+    "Además, excluye los deals que pasan de Lead a Contacto sin contacto previo."
 )
 
 uploaded = st.file_uploader("Sube tu Excel (.xlsx)", type=["xlsx"])
@@ -85,8 +86,7 @@ def to_madrid_ts(value):
 def get_activity_datetime_local(activity_data: dict) -> pd.Timestamp:
     """
     Para activities del flow:
-    - due_date + due_time vienen como hora UTC efectiva en este caso
-    - los convertimos a Europe/Madrid
+    due_date + due_time se interpretan en UTC y se convierten a Europe/Madrid.
     """
     due_date = clean_text(activity_data.get("due_date"))
     due_time = clean_text(activity_data.get("due_time"))
@@ -294,6 +294,32 @@ def extract_owner_changes(flow_json: dict) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("event_time").reset_index(drop=True)
 
 
+def extract_first_lead_to_contact_time(flow_json: dict) -> pd.Timestamp:
+    changes = []
+
+    for item in flow_json.get("data", []) or []:
+        if item.get("object") != "dealChange":
+            continue
+
+        data = item.get("data", {}) or {}
+        if data.get("field_key") != "stage_id":
+            continue
+
+        add = data.get("additional_data") or {}
+        old_stage = clean_text(add.get("old_value_formatted"))
+        new_stage = clean_text(add.get("new_value_formatted"))
+
+        if old_stage.lower() == "lead" and new_stage.lower().startswith("contacto"):
+            ts = to_madrid_ts(data.get("log_time"))
+            if pd.notna(ts):
+                changes.append(ts)
+
+    if not changes:
+        return pd.NaT
+
+    return min(changes)
+
+
 def extract_flow_activities(flow_json: dict, selected_mode: str) -> pd.DataFrame:
     rows = []
     pattern = get_contact_pattern(selected_mode)
@@ -338,6 +364,14 @@ def extract_flow_activities(flow_json: dict, selected_mode: str) -> pd.DataFrame
         ])
 
     return pd.DataFrame(rows).sort_values("activity_time").reset_index(drop=True)
+
+
+def has_contact_before_stage_change(flow_activities: pd.DataFrame, stage_change_time: pd.Timestamp) -> bool:
+    if flow_activities.empty or pd.isna(stage_change_time):
+        return False
+
+    prior = flow_activities[flow_activities["activity_time"] < stage_change_time].copy()
+    return len(prior) > 0
 
 
 def build_assignment_segments(
@@ -406,6 +440,7 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
     rows = []
     debug_segments = []
     debug_activities = []
+    excluded_stage_without_contact = []
 
     deal_ids = (
         pd.to_numeric(deals_df[COL_DEAL_ID], errors="coerce")
@@ -455,6 +490,20 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
         deal_created = extract_created_time_from_flow(flow_json, fallback_created)
         owner_changes = extract_owner_changes(flow_json)
         flow_activities = extract_flow_activities(flow_json, selected_mode)
+        first_lead_to_contact_time = extract_first_lead_to_contact_time(flow_json)
+
+        if pd.notna(first_lead_to_contact_time):
+            had_contact_before = has_contact_before_stage_change(flow_activities, first_lead_to_contact_time)
+
+            if not had_contact_before:
+                excluded_stage_without_contact.append({
+                    "deal_id": deal_id,
+                    "deal_created": deal_created,
+                    "first_lead_to_contact_time": first_lead_to_contact_time,
+                    "motivo_exclusion": "Pasa de Lead a Contacto sin contacto previo en flow",
+                })
+                progress.progress(i / total if total else 1)
+                continue
 
         segments = build_assignment_segments(
             deal_id=deal_id,
@@ -554,6 +603,7 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
             "",
             pd.DataFrame(),
             pd.DataFrame(),
+            pd.DataFrame(excluded_stage_without_contact),
             labels,
         )
 
@@ -592,15 +642,26 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
 
     debug_segments_df = pd.concat(debug_segments, ignore_index=True) if debug_segments else pd.DataFrame()
     debug_activities_df = pd.concat(debug_activities, ignore_index=True) if debug_activities else pd.DataFrame()
+    excluded_df = pd.DataFrame(excluded_stage_without_contact)
 
-    return res, agent_stats, media_total, mediana_total, debug_segments_df, debug_activities_df, labels
+    return (
+        res,
+        agent_stats,
+        media_total,
+        mediana_total,
+        debug_segments_df,
+        debug_activities_df,
+        excluded_df,
+        labels,
+    )
 
 
 def to_excel_bytes(
     res: pd.DataFrame,
     agent_stats: pd.DataFrame,
     debug_segments: pd.DataFrame,
-    debug_activities: pd.DataFrame
+    debug_activities: pd.DataFrame,
+    excluded_df: pd.DataFrame
 ) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -611,6 +672,8 @@ def to_excel_bytes(
             debug_segments.to_excel(writer, index=False, sheet_name="debug_segmentos")
         if len(debug_activities) > 0:
             debug_activities.to_excel(writer, index=False, sheet_name="debug_actividades_flow")
+        if len(excluded_df) > 0:
+            excluded_df.to_excel(writer, index=False, sheet_name="excluidos_sin_contacto")
     return output.getvalue()
 
 
@@ -630,7 +693,16 @@ if uploaded:
         st.warning("Necesitas API token y subdominio para reconstruir el timeline real desde flow.")
         st.stop()
 
-    res, agent_stats, media_total, mediana_total, debug_segments, debug_activities, labels = compute_from_flow(
+    (
+        res,
+        agent_stats,
+        media_total,
+        mediana_total,
+        debug_segments,
+        debug_activities,
+        excluded_df,
+        labels,
+    ) = compute_from_flow(
         df,
         apply_filter_1day,
         contact_mode
@@ -655,6 +727,10 @@ if uploaded:
             use_container_width=True
         )
 
+    if len(excluded_df) > 0:
+        st.subheader("⚠️ Deals excluidos: pasan de Lead a Contacto sin contacto previo")
+        st.dataframe(excluded_df, use_container_width=True)
+
     with st.expander("🔎 Debug segmentos reconstruidos desde flow"):
         if len(debug_segments) > 0:
             st.dataframe(
@@ -673,7 +749,13 @@ if uploaded:
         else:
             st.info("No hay actividades del flow para mostrar.")
 
-    xlsx_bytes = to_excel_bytes(res, agent_stats, debug_segments, debug_activities)
+    xlsx_bytes = to_excel_bytes(
+        res,
+        agent_stats,
+        debug_segments,
+        debug_activities,
+        excluded_df
+    )
     st.download_button(
         "⬇️ Descargar Excel con resultados",
         data=xlsx_bytes,
