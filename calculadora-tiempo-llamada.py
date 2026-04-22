@@ -58,12 +58,13 @@ HOLIDAYS_2026 = {
 }
 
 TEAM_SCHEDULE = {
-    0: [(time(9, 0), time(20, 0))],
-    1: [(time(9, 0), time(20, 0))],
-    2: [(time(9, 0), time(20, 0))],
-    3: [(time(9, 0), time(20, 0))],
-    4: [(time(9, 0), time(20, 0))],
-    5: [(time(12, 30), time(20, 0))],
+    0: [(time(9, 0), time(20, 0))],    # lunes
+    1: [(time(9, 0), time(20, 0))],    # martes
+    2: [(time(9, 0), time(20, 0))],    # miércoles
+    3: [(time(9, 0), time(20, 0))],    # jueves
+    4: [(time(9, 0), time(20, 0))],    # viernes
+    5: [(time(12, 30), time(20, 0))],  # sábado
+    # domingo sin servicio
 }
 
 
@@ -83,6 +84,10 @@ def to_madrid_ts(value):
 
 
 def get_activity_datetime_local(activity_data: dict) -> pd.Timestamp:
+    """
+    Para activities del flow:
+    due_date + due_time se interpretan en UTC y se convierten a Europe/Madrid.
+    """
     due_date = clean_text(activity_data.get("due_date"))
     due_time = clean_text(activity_data.get("due_time"))
 
@@ -451,19 +456,19 @@ def build_assignment_segments(
     initial_owner = clean_text(initial_owner)
 
     if initial_owner:
-    rows.append({
-        "deal_id": deal_id,
-        "segment_start": move_to_next_work_moment(deal_created),
-        "segment_source": "initial_owner_inferred",
-        "from_owner": "",
-        "to_owner": initial_owner,
-        "agent_owner": initial_owner,
-    })
+        rows.append({
+            "deal_id": deal_id,
+            "segment_start": move_to_next_work_moment(deal_created),
+            "segment_source": "initial_owner_inferred",
+            "from_owner": "",
+            "to_owner": initial_owner,
+            "agent_owner": initial_owner,
+        })
 
     for _, ch in owner_changes.iterrows():
         rows.append({
             "deal_id": deal_id,
-            "segment_start": ch["event_time"],
+            "segment_start": move_to_next_work_moment(ch["event_time"]),
             "segment_source": "owner_reassignment",
             "from_owner": ch["old_owner"],
             "to_owner": ch["new_owner"],
@@ -498,10 +503,8 @@ def build_assignment_segments(
 
     seg = pd.DataFrame(rows).sort_values("segment_start").reset_index(drop=True)
 
-    # quitar duplicados exactos por inicio + owner + source
     seg = seg.drop_duplicates(subset=["segment_start", "agent_owner", "segment_source"]).copy()
 
-    # si hay varios eventos casi simultáneos, nos quedamos con el más operativo
     source_priority = {
         "reopened": 3,
         "owner_reassignment": 2,
@@ -511,7 +514,6 @@ def build_assignment_segments(
 
     seg = seg.sort_values(["segment_start", "source_priority"], ascending=[True, False]).reset_index(drop=True)
 
-    # quitar duplicados consecutivos del mismo owner si el inicio es el mismo o casi mismo momento lógico
     cleaned_rows = []
     for _, row in seg.iterrows():
         if not cleaned_rows:
