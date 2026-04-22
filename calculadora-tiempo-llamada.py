@@ -62,11 +62,6 @@ def to_madrid_ts(value):
 
 
 def get_activity_datetime_local(activity_data: dict) -> pd.Timestamp:
-    """
-    Para activities del flow:
-    - due_date + due_time vienen como hora UTC efectiva
-    - las convertimos a Europe/Madrid
-    """
     due_date = clean_text(activity_data.get("due_date"))
     due_time = clean_text(activity_data.get("due_time"))
 
@@ -399,6 +394,27 @@ def assign_owner_to_flow_activities(activities_df: pd.DataFrame, segments_df: pd
     return acts
 
 
+def build_agent_summary(df: pd.DataFrame, count_col_name: str = "asignaciones_con_contacto") -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+
+    out = (
+        df.groupby("agent_owner", dropna=False)
+        .agg(
+            **{
+                count_col_name: ("deal_id", "count"),
+                "media_seg": ("delta_sec", "mean"),
+                "mediana_seg": ("delta_sec", "median"),
+            }
+        )
+        .reset_index()
+    )
+    out["media"] = out["media_seg"].apply(format_duration_exact)
+    out["mediana"] = out["mediana_seg"].apply(format_duration_exact)
+    out = out.sort_values("media_seg", na_position="last")
+    return out
+
+
 def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_mode: str):
     labels = get_result_labels(selected_mode)
 
@@ -631,6 +647,8 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
         return (
             pd.DataFrame(),
             pd.DataFrame(),
+            pd.DataFrame(),
+            pd.DataFrame(),
             "",
             "",
             pd.DataFrame(),
@@ -654,36 +672,41 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
     res_valid = res[res["excluded_segment"] != True].copy()
     res_with_contact = res_valid[res_valid["has_contact"] == True].copy()
 
-    if not res_with_contact.empty:
-        agent_stats = (
-            res_with_contact.groupby("agent_owner", dropna=False)
-            .agg(
-                asignaciones_con_contacto=("deal_id", "count"),
-                media_seg=("delta_sec", "mean"),
-                mediana_seg=("delta_sec", "median"),
-            )
-            .reset_index()
-        )
-        agent_stats["media"] = agent_stats["media_seg"].apply(format_duration_exact)
-        agent_stats["mediana"] = agent_stats["mediana_seg"].apply(format_duration_exact)
-        agent_stats = agent_stats.sort_values("media_seg", na_position="last")
+    primeras_asignaciones_contacto = res_with_contact[res_with_contact["segment_index"] == 1].copy()
+    reasignaciones_contacto = res_with_contact[res_with_contact["segment_index"] > 1].copy()
 
+    agent_stats = build_agent_summary(res_with_contact, "asignaciones_con_contacto")
+    agent_stats_first = build_agent_summary(primeras_asignaciones_contacto, "primeras_asignaciones_con_contacto")
+    agent_stats_reassigned = build_agent_summary(reasignaciones_contacto, "reasignaciones_con_contacto")
+
+    if not res_with_contact.empty:
         media_total = format_duration_exact(res_with_contact["delta_sec"].mean())
         mediana_total = format_duration_exact(res_with_contact["delta_sec"].median())
     else:
-        agent_stats = pd.DataFrame()
         media_total = ""
         mediana_total = ""
 
     debug_segments_df = pd.concat(debug_segments, ignore_index=True) if debug_segments else pd.DataFrame()
     debug_activities_df = pd.concat(debug_activities, ignore_index=True) if debug_activities else pd.DataFrame()
 
-    return res, agent_stats, media_total, mediana_total, debug_segments_df, debug_activities_df, labels
+    return (
+        res,
+        agent_stats,
+        agent_stats_first,
+        agent_stats_reassigned,
+        media_total,
+        mediana_total,
+        debug_segments_df,
+        debug_activities_df,
+        labels,
+    )
 
 
 def to_excel_bytes(
     res: pd.DataFrame,
     agent_stats: pd.DataFrame,
+    agent_stats_first: pd.DataFrame,
+    agent_stats_reassigned: pd.DataFrame,
     debug_segments: pd.DataFrame,
     debug_activities: pd.DataFrame
 ) -> bytes:
@@ -692,6 +715,10 @@ def to_excel_bytes(
         res.to_excel(writer, index=False, sheet_name="por_asignacion")
         if len(agent_stats) > 0:
             agent_stats.to_excel(writer, index=False, sheet_name="resumen_por_agente")
+        if len(agent_stats_first) > 0:
+            agent_stats_first.to_excel(writer, index=False, sheet_name="agente_primera_asig")
+        if len(agent_stats_reassigned) > 0:
+            agent_stats_reassigned.to_excel(writer, index=False, sheet_name="agente_reasignacion")
         if len(debug_segments) > 0:
             debug_segments.to_excel(writer, index=False, sheet_name="debug_segmentos")
         if len(debug_activities) > 0:
@@ -715,7 +742,17 @@ if uploaded:
         st.warning("Necesitas API token y subdominio para reconstruir el timeline real desde flow.")
         st.stop()
 
-    res, agent_stats, media_total, mediana_total, debug_segments, debug_activities, labels = compute_from_flow(
+    (
+        res,
+        agent_stats,
+        agent_stats_first,
+        agent_stats_reassigned,
+        media_total,
+        mediana_total,
+        debug_segments,
+        debug_activities,
+        labels,
+    ) = compute_from_flow(
         df,
         apply_filter_1day,
         contact_mode
@@ -812,6 +849,24 @@ if uploaded:
             use_container_width=True
         )
 
+    if len(agent_stats_first) > 0:
+        st.subheader("👤 Resumen por agente - Primera asignación")
+        st.dataframe(
+            agent_stats_first[["agent_owner", "primeras_asignaciones_con_contacto", "media", "mediana"]],
+            use_container_width=True
+        )
+    else:
+        st.info("No hay datos de primera asignación por agente.")
+
+    if len(agent_stats_reassigned) > 0:
+        st.subheader("👤 Resumen por agente - Reasignaciones")
+        st.dataframe(
+            agent_stats_reassigned[["agent_owner", "reasignaciones_con_contacto", "media", "mediana"]],
+            use_container_width=True
+        )
+    else:
+        st.info("No hay datos de reasignaciones por agente.")
+
     excluded_segments = res[res["excluded_segment"] == True].copy()
     if len(excluded_segments) > 0:
         st.subheader("⚠️ Tramos excluidos del cálculo")
@@ -843,7 +898,14 @@ if uploaded:
         else:
             st.info("No hay actividades del flow para mostrar.")
 
-    xlsx_bytes = to_excel_bytes(res, agent_stats, debug_segments, debug_activities)
+    xlsx_bytes = to_excel_bytes(
+        res,
+        agent_stats,
+        agent_stats_first,
+        agent_stats_reassigned,
+        debug_segments,
+        debug_activities
+    )
     st.download_button(
         "⬇️ Descargar Excel con resultados",
         data=xlsx_bytes,
