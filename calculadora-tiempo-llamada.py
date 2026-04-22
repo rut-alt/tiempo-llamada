@@ -13,8 +13,8 @@ st.title("📞 Primera llamada por asignación usando Flow de Pipedrive")
 st.write(
     "Sube un Excel para obtener los negocios a analizar. "
     "La app usa el flow API de Pipedrive como fuente de verdad para reconstruir "
-    "creación del negocio, reaperturas, reasignaciones y actividades, "
-    "y calcula la primera llamada/contacto tras cada tramo operativo."
+    "creación del negocio, reasignaciones, estados y actividades, "
+    "y calcula la primera llamada/contacto tras cada asignación."
 )
 
 uploaded = st.file_uploader("Sube tu Excel (.xlsx)", type=["xlsx"])
@@ -58,52 +58,14 @@ HOLIDAYS_2026 = {
     pd.Timestamp("2026-12-25").date(),
 }
 
-DEFAULT_SCHEDULE = {
-    0: [(time(12, 30), time(20, 0))],
-    1: [(time(12, 30), time(20, 0))],
-    2: [(time(12, 30), time(20, 0))],
-    3: [(time(12, 30), time(20, 0))],
-    4: [(time(12, 30), time(20, 0))],
-    5: [(time(12, 30), time(20, 0))],
+TEAM_SCHEDULE = {
+    0: [(time(9, 0), time(20, 0))],    # lunes
+    1: [(time(9, 0), time(20, 0))],    # martes
+    2: [(time(9, 0), time(20, 0))],    # miércoles
+    3: [(time(9, 0), time(20, 0))],    # jueves
+    4: [(time(9, 0), time(20, 0))],    # viernes
+    5: [(time(12, 30), time(20, 0))],  # sábado
     # domingo sin servicio
-}
-
-AGENT_SCHEDULES = {
-    "Toñi": {
-        0: [(time(9, 0), time(14, 0))],
-        1: [(time(9, 0), time(14, 0))],
-        2: [(time(9, 0), time(14, 0))],
-        3: [(time(9, 0), time(14, 0))],
-        4: [(time(9, 0), time(14, 0))],
-    },
-    "Meri": {
-        0: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
-        1: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
-        2: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
-        3: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
-        4: [(time(9, 30), time(15, 0))],
-    },
-    "Isabel": {
-        0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        4: [(time(9, 0), time(14, 30))],
-    },
-    "Carolina": {
-        0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        4: [(time(9, 0), time(14, 30))],
-    },
-    "Jesús": {
-        0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
-        4: [(time(9, 0), time(14, 30))],
-    },
 }
 
 
@@ -111,32 +73,6 @@ def clean_text(value) -> str:
     if pd.isna(value) or value is None:
         return ""
     return str(value).strip()
-
-
-def normalize_agent_name(name: str) -> str:
-    name = clean_text(name)
-    mapping = {
-        "ANTONIA CAMPOS GIL": "Toñi",
-        "Toñi": "Toñi",
-        "TOÑI": "Toñi",
-        "Meri": "Meri",
-        "EMÉRITA CERRATO NOGUEIRA": "Meri",
-        "Emérita Cerrato Nogueira": "Meri",
-        "Isabel": "Isabel",
-        "ISABEL": "Isabel",
-        "Carolina": "Carolina",
-        "CAROLINA": "Carolina",
-        "Jesús": "Jesús",
-        "JESÚS": "Jesús",
-        "Jesus": "Jesús",
-        "JESUS": "Jesús",
-    }
-    return mapping.get(name, name)
-
-
-def get_schedule_for_agent(agent_name: str):
-    agent_name = normalize_agent_name(agent_name)
-    return AGENT_SCHEDULES.get(agent_name, DEFAULT_SCHEDULE)
 
 
 def to_madrid_ts(value):
@@ -149,6 +85,11 @@ def to_madrid_ts(value):
 
 
 def get_activity_datetime_local(activity_data: dict) -> pd.Timestamp:
+    """
+    Para activities del flow:
+    - due_date + due_time vienen como hora UTC efectiva
+    - las convertimos a Europe/Madrid
+    """
     due_date = clean_text(activity_data.get("due_date"))
     due_time = clean_text(activity_data.get("due_time"))
 
@@ -175,13 +116,12 @@ def is_holiday(ts: pd.Timestamp) -> bool:
     return ts.date() in HOLIDAYS_2026
 
 
-def get_day_windows(ts: pd.Timestamp, agent_name: str = ""):
+def get_day_windows(ts: pd.Timestamp):
     if is_holiday(ts):
         return []
 
     weekday = ts.weekday()
-    schedule = get_schedule_for_agent(agent_name)
-    windows = schedule.get(weekday, [])
+    windows = TEAM_SCHEDULE.get(weekday, [])
 
     return [
         (
@@ -192,14 +132,14 @@ def get_day_windows(ts: pd.Timestamp, agent_name: str = ""):
     ]
 
 
-def move_to_next_work_moment(ts: pd.Timestamp, agent_name: str = "") -> pd.Timestamp:
+def move_to_next_work_moment(ts: pd.Timestamp) -> pd.Timestamp:
     if pd.isna(ts):
         return ts
 
     cur = ts
 
     for _ in range(370):
-        windows = get_day_windows(cur, agent_name)
+        windows = get_day_windows(cur)
 
         if not windows:
             cur = pd.Timestamp(cur.date()) + pd.Timedelta(days=1)
@@ -218,20 +158,20 @@ def move_to_next_work_moment(ts: pd.Timestamp, agent_name: str = "") -> pd.Times
     return ts
 
 
-def business_seconds_between(start_ts: pd.Timestamp, end_ts: pd.Timestamp, agent_name: str = "") -> float:
+def business_seconds_between(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> float:
     if pd.isna(start_ts) or pd.isna(end_ts):
         return float("nan")
     if end_ts < start_ts:
         return float("nan")
 
-    cur = move_to_next_work_moment(start_ts, agent_name)
+    cur = move_to_next_work_moment(start_ts)
     total_seconds = 0.0
 
     for _ in range(370):
         if cur >= end_ts:
             break
 
-        windows = get_day_windows(cur, agent_name)
+        windows = get_day_windows(cur)
         if not windows:
             cur = pd.Timestamp(cur.date()) + pd.Timedelta(days=1)
             cur = cur.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -294,16 +234,16 @@ def get_contact_pattern(selected_mode: str) -> str:
 def get_result_labels(selected_mode: str):
     if selected_mode == "Primera llamada saliente":
         return {
-            "title": "✅ Primera llamada saliente por tramo operativo",
-            "metric_count": "Tramos con 1ª llamada",
+            "title": "✅ Primera llamada saliente por asignación",
+            "metric_count": "Asignaciones con 1ª llamada",
             "time_col": "tiempo_hasta_primera_llamada",
-            "download_name": "primera_llamada_por_tramo_flow.xlsx",
+            "download_name": "primera_llamada_por_asignacion_flow.xlsx",
         }
     return {
-        "title": "✅ Primer contacto por tramo operativo",
-        "metric_count": "Tramos con 1er contacto",
+        "title": "✅ Primer contacto por asignación",
+        "metric_count": "Asignaciones con 1er contacto",
         "time_col": "tiempo_hasta_primer_contacto",
-        "download_name": "primer_contacto_por_tramo_flow.xlsx",
+        "download_name": "primer_contacto_por_asignacion_flow.xlsx",
     }
 
 
@@ -340,8 +280,8 @@ def extract_owner_changes(flow_json: dict) -> pd.DataFrame:
 
         if obj == "dealChange" and data.get("field_key") == "user_id":
             event_time = to_madrid_ts(data.get("log_time"))
-            old_owner = normalize_agent_name((data.get("additional_data") or {}).get("old_value_formatted"))
-            new_owner = normalize_agent_name((data.get("additional_data") or {}).get("new_value_formatted"))
+            old_owner = clean_text((data.get("additional_data") or {}).get("old_value_formatted"))
+            new_owner = clean_text((data.get("additional_data") or {}).get("new_value_formatted"))
 
             if pd.notna(event_time) and new_owner:
                 rows.append({
@@ -384,38 +324,11 @@ def extract_reopen_events(flow_json: dict) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("event_time").reset_index(drop=True)
 
 
-def extract_initial_owner_from_flow(flow_json: dict) -> str:
-    candidates = []
-
-    for item in flow_json.get("data", []) or []:
-        if item.get("object") != "activity":
-            continue
-
-        data = item.get("data", {}) or {}
-        owner_name = normalize_agent_name(data.get("owner_name"))
-        if not owner_name:
-            continue
-
-        ts = get_activity_datetime_local(data)
-        if pd.isna(ts):
-            fallback_times = [
-                to_madrid_ts(data.get("add_time")),
-                to_madrid_ts(data.get("marked_as_done_time")),
-                to_madrid_ts(data.get("update_time")),
-            ]
-            ts = next((x for x in fallback_times if pd.notna(x)), pd.NaT)
-
-        if pd.notna(ts):
-            candidates.append((ts, owner_name))
-
-    if not candidates:
-        return ""
-
-    candidates = sorted(candidates, key=lambda x: x[0])
-    return candidates[0][1]
-
-
 def extract_first_lead_to_advanced_stage(flow_json: dict):
+    """
+    Detecta la primera salida desde Lead a cualquier otra etapa
+    (Contacto, Presupuesto, etc.)
+    """
     changes = []
 
     for item in flow_json.get("data", []) or []:
@@ -476,7 +389,7 @@ def extract_flow_activities(flow_json: dict, selected_mode: str) -> pd.DataFrame
             "activity_id": data.get("id"),
             "activity_type": clean_text(data.get("type")),
             "activity_done": data.get("done"),
-            "owner_name": normalize_agent_name(data.get("owner_name")),
+            "owner_name": clean_text(data.get("owner_name")),
             "assigned_to_user_id": data.get("assigned_to_user_id"),
             "user_id": data.get("user_id"),
             "due_date": clean_text(data.get("due_date")),
@@ -503,6 +416,40 @@ def has_contact_before_stage_change(flow_activities: pd.DataFrame, stage_change_
     return len(prior) > 0
 
 
+def extract_initial_owner_from_flow(flow_json: dict) -> str:
+    """
+    Solo para poder crear el tramo inicial cuando no hay dealChange de user_id.
+    """
+    candidates = []
+
+    for item in flow_json.get("data", []) or []:
+        if item.get("object") != "activity":
+            continue
+
+        data = item.get("data", {}) or {}
+        owner_name = clean_text(data.get("owner_name"))
+        if not owner_name:
+            continue
+
+        ts = get_activity_datetime_local(data)
+        if pd.isna(ts):
+            fallback_times = [
+                to_madrid_ts(data.get("add_time")),
+                to_madrid_ts(data.get("marked_as_done_time")),
+                to_madrid_ts(data.get("update_time")),
+            ]
+            ts = next((x for x in fallback_times if pd.notna(x)), pd.NaT)
+
+        if pd.notna(ts):
+            candidates.append((ts, owner_name))
+
+    if not candidates:
+        return ""
+
+    candidates = sorted(candidates, key=lambda x: x[0])
+    return candidates[0][1]
+
+
 def build_assignment_segments(
     deal_id: int,
     deal_created: pd.Timestamp,
@@ -512,43 +459,46 @@ def build_assignment_segments(
 ) -> pd.DataFrame:
     rows = []
 
-    initial_owner = normalize_agent_name(initial_owner)
+    initial_owner = clean_text(initial_owner)
 
+    # tramo inicial solo si no hay otra manera de saber asignación,
+    # y usando created ajustado al siguiente momento hábil
     if initial_owner:
         rows.append({
             "deal_id": deal_id,
-            "segment_start": move_to_next_work_moment(deal_created, initial_owner),
+            "segment_start": move_to_next_work_moment(deal_created),
             "segment_source": "initial_owner_inferred",
             "from_owner": "",
             "to_owner": initial_owner,
             "agent_owner": initial_owner,
         })
 
+    # reasignaciones exactas: aquí NO reajustamos al horario
     for _, ch in owner_changes.iterrows():
-        owner = normalize_agent_name(ch["new_owner"])
         rows.append({
             "deal_id": deal_id,
-            "segment_start": move_to_next_work_moment(ch["event_time"], owner),
+            "segment_start": ch["event_time"],
             "segment_source": "owner_reassignment",
-            "from_owner": normalize_agent_name(ch["old_owner"]),
-            "to_owner": owner,
-            "agent_owner": owner,
+            "from_owner": ch["old_owner"],
+            "to_owner": ch["new_owner"],
+            "agent_owner": ch["new_owner"],
         })
 
+    # reaperturas: mantenemos el evento porque puede abrir un nuevo bloque operativo
     for _, rp in reopen_events.iterrows():
         rp_time = rp["event_time"]
 
         owner_at_reopen = ""
         prior_changes = owner_changes[owner_changes["event_time"] <= rp_time].copy()
         if len(prior_changes) > 0:
-            owner_at_reopen = normalize_agent_name(prior_changes.iloc[-1]["new_owner"])
+            owner_at_reopen = clean_text(prior_changes.iloc[-1]["new_owner"])
         elif initial_owner:
             owner_at_reopen = initial_owner
 
         if owner_at_reopen:
             rows.append({
                 "deal_id": deal_id,
-                "segment_start": move_to_next_work_moment(rp_time, owner_at_reopen),
+                "segment_start": rp_time,
                 "segment_source": "reopened",
                 "from_owner": "",
                 "to_owner": owner_at_reopen,
@@ -681,6 +631,7 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
         reopen_events = extract_reopen_events(flow_json)
         flow_activities = extract_flow_activities(flow_json, selected_mode)
 
+        # Excluir leads que pasan de Lead a Contacto/Presupuesto/etc. sin contacto previo
         first_stage_change_time, old_stage, new_stage = extract_first_lead_to_advanced_stage(flow_json)
 
         if pd.notna(first_stage_change_time):
@@ -729,11 +680,12 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
         for seg_idx, seg in segments.iterrows():
             segment_start = seg["segment_start"]
             segment_end = seg["segment_end"]
-            agent_owner = normalize_agent_name(seg["agent_owner"])
-            from_owner = normalize_agent_name(seg["from_owner"])
-            to_owner = normalize_agent_name(seg["to_owner"])
+            agent_owner = seg["agent_owner"]
+            from_owner = seg["from_owner"]
+            to_owner = seg["to_owner"]
 
-            segment_start_adjusted = move_to_next_work_moment(segment_start, agent_owner)
+            # en asignaciones reales el start es exacto
+            segment_start_adjusted = segment_start
             effective_start = segment_start_adjusted - pd.Timedelta(seconds=OWNER_CHANGE_TOLERANCE_SECONDS)
 
             candidate = flow_activities[
@@ -773,11 +725,7 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
             if first_contact_time < segment_start_adjusted:
                 delta_sec = 0.0
             else:
-                delta_sec = business_seconds_between(
-                    segment_start_adjusted,
-                    first_contact_time,
-                    agent_owner
-                )
+                delta_sec = business_seconds_between(segment_start_adjusted, first_contact_time)
 
             rows.append({
                 "deal_id": deal_id,
@@ -822,7 +770,6 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
         res["tiempo_hasta_primer_contacto"] = res["delta_sec"].apply(format_duration_exact)
 
     res = res.sort_values(["deal_id", "segment_start"]).reset_index(drop=True)
-
     res_with_contact = res[res["has_contact"] == True].copy()
 
     if not res_with_contact.empty:
@@ -838,6 +785,7 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
         agent_stats["media"] = agent_stats["media_seg"].apply(format_duration_exact)
         agent_stats["mediana"] = agent_stats["mediana_seg"].apply(format_duration_exact)
         agent_stats = agent_stats.sort_values("media_seg", na_position="last")
+
         media_total = format_duration_exact(res_with_contact["delta_sec"].mean())
         mediana_total = format_duration_exact(res_with_contact["delta_sec"].median())
     else:
@@ -933,7 +881,7 @@ if uploaded:
         )
 
     if len(excluded_df) > 0:
-        st.subheader("⚠️ Deals excluidos: salen de Lead sin contacto previo")
+        st.subheader("⚠️ Deals excluidos: pasan de Lead a otra etapa sin contacto previo")
         st.dataframe(excluded_df, use_container_width=True)
 
     with st.expander("🔎 Debug segmentos reconstruidos desde flow"):
