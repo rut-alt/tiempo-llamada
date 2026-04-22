@@ -769,6 +769,10 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
             first_contact = candidate.iloc[0]
             first_contact_time = first_contact["activity_time"]
             first_contact_subject = first_contact["activity_subject"]
+
+            if first_contact_time < segment_start_adjusted:
+            delta_sec = 0.0
+            else:
             delta_sec = business_seconds_between(segment_start_adjusted, first_contact_time, agent_owner)
 
             rows.append({
