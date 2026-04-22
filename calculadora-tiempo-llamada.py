@@ -727,13 +727,83 @@ if uploaded:
     if hide_segments_without_contact and len(res_to_show) > 0:
         res_to_show = res_to_show[res_to_show["has_contact"] == True].copy()
 
+    primeras_asignaciones = res_to_show[res_to_show["segment_index"] == 1].copy()
+    reasignaciones = res_to_show[res_to_show["segment_index"] > 1].copy()
+
     col1, col2, col3 = st.columns(3)
     col1.metric(labels["metric_count"], f"{len(res[(res['has_contact'] == True) & (res['excluded_segment'] != True)]):,}".replace(",", "."))
     col2.metric("Media total", media_total)
     col3.metric("Mediana total", mediana_total)
 
+    st.markdown("### 📊 Resumen primera asignación")
+    c1, c2, c3 = st.columns(3)
+    c1.metric(
+        "Tramos con contacto",
+        f"{len(primeras_asignaciones[primeras_asignaciones['has_contact'] == True]):,}".replace(",", ".")
+    )
+
+    if len(primeras_asignaciones[primeras_asignaciones["has_contact"] == True]) > 0:
+        c2.metric(
+            "Media",
+            format_duration_exact(
+                primeras_asignaciones.loc[
+                    primeras_asignaciones["has_contact"] == True, "delta_sec"
+                ].mean()
+            )
+        )
+        c3.metric(
+            "Mediana",
+            format_duration_exact(
+                primeras_asignaciones.loc[
+                    primeras_asignaciones["has_contact"] == True, "delta_sec"
+                ].median()
+            )
+        )
+    else:
+        c2.metric("Media", "")
+        c3.metric("Mediana", "")
+
+    st.markdown("### 📊 Resumen reasignaciones")
+    c4, c5, c6 = st.columns(3)
+    c4.metric(
+        "Tramos con contacto",
+        f"{len(reasignaciones[reasignaciones['has_contact'] == True]):,}".replace(",", ".")
+    )
+
+    if len(reasignaciones[reasignaciones["has_contact"] == True]) > 0:
+        c5.metric(
+            "Media",
+            format_duration_exact(
+                reasignaciones.loc[
+                    reasignaciones["has_contact"] == True, "delta_sec"
+                ].mean()
+            )
+        )
+        c6.metric(
+            "Mediana",
+            format_duration_exact(
+                reasignaciones.loc[
+                    reasignaciones["has_contact"] == True, "delta_sec"
+                ].median()
+            )
+        )
+    else:
+        c5.metric("Media", "")
+        c6.metric("Mediana", "")
+
     st.subheader(labels["title"])
-    st.dataframe(res_to_show, use_container_width=True)
+
+    st.markdown("### 1️⃣ Primera asignación")
+    if len(primeras_asignaciones) > 0:
+        st.dataframe(primeras_asignaciones, use_container_width=True)
+    else:
+        st.info("No hay datos de primera asignación.")
+
+    st.markdown("### 2️⃣ Reasignaciones")
+    if len(reasignaciones) > 0:
+        st.dataframe(reasignaciones, use_container_width=True)
+    else:
+        st.info("No hay datos de reasignaciones.")
 
     if len(agent_stats) > 0:
         st.subheader("👤 Resumen por agente")
