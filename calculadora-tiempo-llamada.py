@@ -288,10 +288,23 @@ def compute_first_contact(df: pd.DataFrame, apply_filter_1day: bool, selected_mo
 
     df = df.dropna(subset=[COL_DEAL_ID, COL_CREATED, COL_DUE_DATE, COL_SUBJECT]).copy()
 
+    # Excluir leads sin ningún registro de llamada
+    df["has_any_call"] = df[COL_SUBJECT].str.contains(
+        r"llamada saliente|llamada entrante",
+        case=False,
+        na=False
+    )
+
+    deals_with_call = df.loc[df["has_any_call"], COL_DEAL_ID].dropna().unique()
+    df = df[df[COL_DEAL_ID].isin(deals_with_call)].copy()
+
+    # Filtrar según el modo elegido
     pattern = get_activity_filter_pattern(selected_mode)
     df = df[df[COL_SUBJECT].str.contains(pattern, case=False, na=False)].copy()
 
-    df["contact_owner"] = df[COL_OWNER]
+    # Separar owner del deal y owner real de la actividad
+    df["deal_owner"] = df[COL_OWNER].astype(str).str.strip()
+    df["contact_owner"] = df[COL_ACTIVITY_OWNER].astype(str).str.strip()
 
     df["created_adjusted"] = df.apply(
         lambda row: adjust_creation_time_for_agent(row[COL_CREATED], row["contact_owner"]),
@@ -316,7 +329,7 @@ def compute_first_contact(df: pd.DataFrame, apply_filter_1day: bool, selected_mo
         COL_DUE_DATE: "first_contact_time",
         COL_SUBJECT: "first_contact_subject",
     })
-
+    
     real_start_times = []
     start_sources = []
     reassignment_times = []
@@ -380,6 +393,7 @@ def compute_first_contact(df: pd.DataFrame, apply_filter_1day: bool, selected_mo
         COL_DEAL_ID,
         COL_CREATED,
         "created_adjusted",
+        "deal_owner",
         "reassignment_time",
         "start_time_real",
         "start_source",
@@ -389,6 +403,7 @@ def compute_first_contact(df: pd.DataFrame, apply_filter_1day: bool, selected_mo
         "delta_sec",
         "flow_checked",
         "contact_owner",
+        
     ]
 
     res = first_contacts[keep_cols].copy()
@@ -474,6 +489,7 @@ if uploaded:
         debug_cols = [
             COL_DEAL_ID,
             COL_CREATED,
+            "deal_owner",
             "contact_owner",
             "created_adjusted",
             COL_DUE_DATE,
