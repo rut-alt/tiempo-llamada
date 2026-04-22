@@ -294,6 +294,41 @@ def extract_owner_changes(flow_json: dict) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("event_time").reset_index(drop=True)
 
 
+def extract_initial_owner_from_flow(flow_json: dict) -> str:
+    """
+    Intenta inferir el owner inicial del deal cuando no hay dealChange de user_id.
+    Usa la primera actividad con owner_name.
+    """
+    candidates = []
+
+    for item in flow_json.get("data", []) or []:
+        if item.get("object") != "activity":
+            continue
+
+        data = item.get("data", {}) or {}
+        owner_name = clean_text(data.get("owner_name"))
+        if not owner_name:
+            continue
+
+        ts = get_activity_datetime_local(data)
+        if pd.isna(ts):
+            fallback_times = [
+                to_madrid_ts(data.get("add_time")),
+                to_madrid_ts(data.get("marked_as_done_time")),
+                to_madrid_ts(data.get("update_time")),
+            ]
+            ts = next((x for x in fallback_times if pd.notna(x)), pd.NaT)
+
+        if pd.notna(ts):
+            candidates.append((ts, owner_name))
+
+    if not candidates:
+        return ""
+
+    candidates = sorted(candidates, key=lambda x: x[0])
+    return candidates[0][1]
+
+
 def extract_first_lead_to_advanced_stage(flow_json: dict):
     """
     Devuelve la primera vez que un deal sale de Lead hacia cualquier otra etapa.
@@ -388,9 +423,22 @@ def has_contact_before_stage_change(flow_activities: pd.DataFrame, stage_change_
 def build_assignment_segments(
     deal_id: int,
     deal_created: pd.Timestamp,
-    owner_changes: pd.DataFrame
+    owner_changes: pd.DataFrame,
+    initial_owner: str = ""
 ) -> pd.DataFrame:
     rows = []
+
+    initial_owner = clean_text(initial_owner)
+
+    if initial_owner:
+        rows.append({
+            "deal_id": deal_id,
+            "segment_start": deal_created,
+            "segment_source": "initial_owner_inferred",
+            "from_owner": "",
+            "to_owner": initial_owner,
+            "agent_owner": initial_owner,
+        })
 
     for _, ch in owner_changes.iterrows():
         rows.append({
@@ -519,10 +567,13 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
                 progress.progress(i / total if total else 1)
                 continue
 
+        initial_owner = extract_initial_owner_from_flow(flow_json)
+
         segments = build_assignment_segments(
             deal_id=deal_id,
             deal_created=deal_created,
-            owner_changes=owner_changes
+            owner_changes=owner_changes,
+            initial_owner=initial_owner
         )
 
         if not segments.empty:
