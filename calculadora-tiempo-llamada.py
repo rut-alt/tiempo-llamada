@@ -43,6 +43,7 @@ COL_DEAL_ID = "Negocio - ID"
 COL_CREATED = "Negocio - Negocio creado el"
 
 ONE_DAY_SECONDS = 86400
+OWNER_CHANGE_TOLERANCE_SECONDS = 60
 LOCAL_TIMEZONE = "Europe/Madrid"
 
 HOLIDAYS_2026 = {
@@ -57,14 +58,52 @@ HOLIDAYS_2026 = {
     pd.Timestamp("2026-12-25").date(),
 }
 
-TEAM_SCHEDULE = {
-    0: [(time(9, 0), time(20, 0))],    # lunes
-    1: [(time(9, 0), time(20, 0))],    # martes
-    2: [(time(9, 0), time(20, 0))],    # miércoles
-    3: [(time(9, 0), time(20, 0))],    # jueves
-    4: [(time(9, 0), time(20, 0))],    # viernes
+DEFAULT_SCHEDULE = {
+    0: [(time(12, 30), time(20, 0))],  # lunes
+    1: [(time(12, 30), time(20, 0))],  # martes
+    2: [(time(12, 30), time(20, 0))],  # miércoles
+    3: [(time(12, 30), time(20, 0))],  # jueves
+    4: [(time(12, 30), time(20, 0))],  # viernes
     5: [(time(12, 30), time(20, 0))],  # sábado
     # domingo sin servicio
+}
+
+AGENT_SCHEDULES = {
+    "Toñi": {
+        0: [(time(9, 0), time(14, 0))],
+        1: [(time(9, 0), time(14, 0))],
+        2: [(time(9, 0), time(14, 0))],
+        3: [(time(9, 0), time(14, 0))],
+        4: [(time(9, 0), time(14, 0))],
+    },
+    "Meri": {
+        0: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
+        1: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
+        2: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
+        3: [(time(9, 30), time(13, 0)), (time(16, 0), time(20, 30))],
+        4: [(time(9, 30), time(15, 0))],
+    },
+    "Isabel": {
+        0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        4: [(time(9, 0), time(14, 30))],
+    },
+    "Carolina": {
+        0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        4: [(time(9, 0), time(14, 30))],
+    },
+    "Jesús": {
+        0: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        1: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        2: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        3: [(time(9, 0), time(14, 30)), (time(16, 0), time(18, 30))],
+        4: [(time(9, 0), time(14, 30))],
+    },
 }
 
 
@@ -72,6 +111,32 @@ def clean_text(value) -> str:
     if pd.isna(value) or value is None:
         return ""
     return str(value).strip()
+
+
+def normalize_agent_name(name: str) -> str:
+    name = clean_text(name)
+    mapping = {
+        "ANTONIA CAMPOS GIL": "Toñi",
+        "Toñi": "Toñi",
+        "TOÑI": "Toñi",
+        "Meri": "Meri",
+        "EMÉRITA CERRATO NOGUEIRA": "Meri",
+        "Emérita Cerrato Nogueira": "Meri",
+        "Isabel": "Isabel",
+        "ISABEL": "Isabel",
+        "Carolina": "Carolina",
+        "CAROLINA": "Carolina",
+        "Jesús": "Jesús",
+        "JESÚS": "Jesús",
+        "Jesus": "Jesús",
+        "JESUS": "Jesús",
+    }
+    return mapping.get(name, name)
+
+
+def get_schedule_for_agent(agent_name: str):
+    agent_name = normalize_agent_name(agent_name)
+    return AGENT_SCHEDULES.get(agent_name, DEFAULT_SCHEDULE)
 
 
 def to_madrid_ts(value):
@@ -84,10 +149,6 @@ def to_madrid_ts(value):
 
 
 def get_activity_datetime_local(activity_data: dict) -> pd.Timestamp:
-    """
-    Para activities del flow:
-    due_date + due_time se interpretan en UTC y se convierten a Europe/Madrid.
-    """
     due_date = clean_text(activity_data.get("due_date"))
     due_time = clean_text(activity_data.get("due_time"))
 
@@ -114,12 +175,13 @@ def is_holiday(ts: pd.Timestamp) -> bool:
     return ts.date() in HOLIDAYS_2026
 
 
-def get_day_windows(ts: pd.Timestamp):
+def get_day_windows(ts: pd.Timestamp, agent_name: str = ""):
     if is_holiday(ts):
         return []
 
     weekday = ts.weekday()
-    windows = TEAM_SCHEDULE.get(weekday, [])
+    schedule = get_schedule_for_agent(agent_name)
+    windows = schedule.get(weekday, [])
 
     return [
         (
@@ -130,14 +192,14 @@ def get_day_windows(ts: pd.Timestamp):
     ]
 
 
-def move_to_next_work_moment(ts: pd.Timestamp) -> pd.Timestamp:
+def move_to_next_work_moment(ts: pd.Timestamp, agent_name: str = "") -> pd.Timestamp:
     if pd.isna(ts):
         return ts
 
     cur = ts
 
     for _ in range(370):
-        windows = get_day_windows(cur)
+        windows = get_day_windows(cur, agent_name)
 
         if not windows:
             cur = pd.Timestamp(cur.date()) + pd.Timedelta(days=1)
@@ -156,20 +218,20 @@ def move_to_next_work_moment(ts: pd.Timestamp) -> pd.Timestamp:
     return ts
 
 
-def business_seconds_between(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> float:
+def business_seconds_between(start_ts: pd.Timestamp, end_ts: pd.Timestamp, agent_name: str = "") -> float:
     if pd.isna(start_ts) or pd.isna(end_ts):
         return float("nan")
     if end_ts < start_ts:
         return float("nan")
 
-    cur = move_to_next_work_moment(start_ts)
+    cur = move_to_next_work_moment(start_ts, agent_name)
     total_seconds = 0.0
 
     for _ in range(370):
         if cur >= end_ts:
             break
 
-        windows = get_day_windows(cur)
+        windows = get_day_windows(cur, agent_name)
         if not windows:
             cur = pd.Timestamp(cur.date()) + pd.Timedelta(days=1)
             cur = cur.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -278,8 +340,8 @@ def extract_owner_changes(flow_json: dict) -> pd.DataFrame:
 
         if obj == "dealChange" and data.get("field_key") == "user_id":
             event_time = to_madrid_ts(data.get("log_time"))
-            old_owner = clean_text((data.get("additional_data") or {}).get("old_value_formatted"))
-            new_owner = clean_text((data.get("additional_data") or {}).get("new_value_formatted"))
+            old_owner = normalize_agent_name((data.get("additional_data") or {}).get("old_value_formatted"))
+            new_owner = normalize_agent_name((data.get("additional_data") or {}).get("new_value_formatted"))
 
             if pd.notna(event_time) and new_owner:
                 rows.append({
@@ -295,9 +357,6 @@ def extract_owner_changes(flow_json: dict) -> pd.DataFrame:
 
 
 def extract_reopen_events(flow_json: dict) -> pd.DataFrame:
-    """
-    Detecta reaperturas reales: lost -> open / Perdido -> Abierto
-    """
     rows = []
 
     for item in flow_json.get("data", []) or []:
@@ -333,7 +392,7 @@ def extract_initial_owner_from_flow(flow_json: dict) -> str:
             continue
 
         data = item.get("data", {}) or {}
-        owner_name = clean_text(data.get("owner_name"))
+        owner_name = normalize_agent_name(data.get("owner_name"))
         if not owner_name:
             continue
 
@@ -417,7 +476,7 @@ def extract_flow_activities(flow_json: dict, selected_mode: str) -> pd.DataFrame
             "activity_id": data.get("id"),
             "activity_type": clean_text(data.get("type")),
             "activity_done": data.get("done"),
-            "owner_name": clean_text(data.get("owner_name")),
+            "owner_name": normalize_agent_name(data.get("owner_name")),
             "assigned_to_user_id": data.get("assigned_to_user_id"),
             "user_id": data.get("user_id"),
             "due_date": clean_text(data.get("due_date")),
@@ -453,12 +512,12 @@ def build_assignment_segments(
 ) -> pd.DataFrame:
     rows = []
 
-    initial_owner = clean_text(initial_owner)
+    initial_owner = normalize_agent_name(initial_owner)
 
     if initial_owner:
         rows.append({
             "deal_id": deal_id,
-            "segment_start": move_to_next_work_moment(deal_created),
+            "segment_start": move_to_next_work_moment(deal_created, initial_owner),
             "segment_source": "initial_owner_inferred",
             "from_owner": "",
             "to_owner": initial_owner,
@@ -466,13 +525,14 @@ def build_assignment_segments(
         })
 
     for _, ch in owner_changes.iterrows():
+        owner = normalize_agent_name(ch["new_owner"])
         rows.append({
             "deal_id": deal_id,
-            "segment_start": move_to_next_work_moment(ch["event_time"]),
+            "segment_start": move_to_next_work_moment(ch["event_time"], owner),
             "segment_source": "owner_reassignment",
-            "from_owner": ch["old_owner"],
-            "to_owner": ch["new_owner"],
-            "agent_owner": ch["new_owner"],
+            "from_owner": normalize_agent_name(ch["old_owner"]),
+            "to_owner": owner,
+            "agent_owner": owner,
         })
 
     for _, rp in reopen_events.iterrows():
@@ -481,14 +541,14 @@ def build_assignment_segments(
         owner_at_reopen = ""
         prior_changes = owner_changes[owner_changes["event_time"] <= rp_time].copy()
         if len(prior_changes) > 0:
-            owner_at_reopen = clean_text(prior_changes.iloc[-1]["new_owner"])
+            owner_at_reopen = normalize_agent_name(prior_changes.iloc[-1]["new_owner"])
         elif initial_owner:
             owner_at_reopen = initial_owner
 
         if owner_at_reopen:
             rows.append({
                 "deal_id": deal_id,
-                "segment_start": move_to_next_work_moment(rp_time),
+                "segment_start": move_to_next_work_moment(rp_time, owner_at_reopen),
                 "segment_source": "reopened",
                 "from_owner": "",
                 "to_owner": owner_at_reopen,
@@ -502,7 +562,6 @@ def build_assignment_segments(
         ])
 
     seg = pd.DataFrame(rows).sort_values("segment_start").reset_index(drop=True)
-
     seg = seg.drop_duplicates(subset=["segment_start", "agent_owner", "segment_source"]).copy()
 
     source_priority = {
@@ -511,7 +570,6 @@ def build_assignment_segments(
         "initial_owner_inferred": 1,
     }
     seg["source_priority"] = seg["segment_source"].map(source_priority).fillna(0)
-
     seg = seg.sort_values(["segment_start", "source_priority"], ascending=[True, False]).reset_index(drop=True)
 
     cleaned_rows = []
@@ -531,7 +589,6 @@ def build_assignment_segments(
             cleaned_rows.append(row.to_dict())
 
     seg = pd.DataFrame(cleaned_rows).sort_values("segment_start").reset_index(drop=True)
-
     seg["segment_end"] = seg["segment_start"].shift(-1)
     seg["deal_created"] = deal_created
 
@@ -672,15 +729,16 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
         for seg_idx, seg in segments.iterrows():
             segment_start = seg["segment_start"]
             segment_end = seg["segment_end"]
-            agent_owner = seg["agent_owner"]
-            from_owner = seg["from_owner"]
-            to_owner = seg["to_owner"]
+            agent_owner = normalize_agent_name(seg["agent_owner"])
+            from_owner = normalize_agent_name(seg["from_owner"])
+            to_owner = normalize_agent_name(seg["to_owner"])
 
-            segment_start_adjusted = move_to_next_work_moment(segment_start)
+            segment_start_adjusted = move_to_next_work_moment(segment_start, agent_owner)
+            effective_start = segment_start_adjusted - pd.Timedelta(seconds=OWNER_CHANGE_TOLERANCE_SECONDS)
 
             candidate = flow_activities[
                 (flow_activities["real_owner"] == agent_owner) &
-                (flow_activities["activity_time"] >= segment_start_adjusted)
+                (flow_activities["activity_time"] >= effective_start)
             ].copy()
 
             if pd.notna(segment_end):
@@ -711,7 +769,7 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
             first_contact = candidate.iloc[0]
             first_contact_time = first_contact["activity_time"]
             first_contact_subject = first_contact["activity_subject"]
-            delta_sec = business_seconds_between(segment_start_adjusted, first_contact_time)
+            delta_sec = business_seconds_between(segment_start_adjusted, first_contact_time, agent_owner)
 
             rows.append({
                 "deal_id": deal_id,
@@ -772,7 +830,6 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
         agent_stats["media"] = agent_stats["media_seg"].apply(format_duration_exact)
         agent_stats["mediana"] = agent_stats["mediana_seg"].apply(format_duration_exact)
         agent_stats = agent_stats.sort_values("media_seg", na_position="last")
-
         media_total = format_duration_exact(res_with_contact["delta_sec"].mean())
         mediana_total = format_duration_exact(res_with_contact["delta_sec"].median())
     else:
