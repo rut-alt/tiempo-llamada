@@ -15,7 +15,7 @@ st.write(
     "La app usa el flow API de Pipedrive como fuente de verdad para reconstruir "
     "creación del negocio, reasignaciones y actividades, "
     "y calcula la primera llamada/contacto tras cada asignación. "
-    "Además, excluye los deals que pasan de Lead a Contacto sin contacto previo."
+    "Además, excluye los deals que salen de Lead a otra etapa sin contacto previo."
 )
 
 uploaded = st.file_uploader("Sube tu Excel (.xlsx)", type=["xlsx"])
@@ -294,7 +294,10 @@ def extract_owner_changes(flow_json: dict) -> pd.DataFrame:
     return pd.DataFrame(rows).sort_values("event_time").reset_index(drop=True)
 
 
-def extract_first_lead_to_contact_time(flow_json: dict) -> pd.Timestamp:
+def extract_first_lead_to_advanced_stage(flow_json: dict):
+    """
+    Devuelve la primera vez que un deal sale de Lead hacia cualquier otra etapa.
+    """
     changes = []
 
     for item in flow_json.get("data", []) or []:
@@ -309,15 +312,23 @@ def extract_first_lead_to_contact_time(flow_json: dict) -> pd.Timestamp:
         old_stage = clean_text(add.get("old_value_formatted"))
         new_stage = clean_text(add.get("new_value_formatted"))
 
-        if old_stage.lower() == "lead" and new_stage.lower().startswith("contacto"):
+        old_stage_norm = old_stage.lower().strip()
+        new_stage_norm = new_stage.lower().strip()
+
+        if old_stage_norm == "lead" and new_stage_norm not in {"", "lead"}:
             ts = to_madrid_ts(data.get("log_time"))
             if pd.notna(ts):
-                changes.append(ts)
+                changes.append({
+                    "stage_change_time": ts,
+                    "old_stage": old_stage,
+                    "new_stage": new_stage,
+                })
 
     if not changes:
-        return pd.NaT
+        return pd.NaT, "", ""
 
-    return min(changes)
+    first_change = sorted(changes, key=lambda x: x["stage_change_time"])[0]
+    return first_change["stage_change_time"], first_change["old_stage"], first_change["new_stage"]
 
 
 def extract_flow_activities(flow_json: dict, selected_mode: str) -> pd.DataFrame:
@@ -490,17 +501,20 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
         deal_created = extract_created_time_from_flow(flow_json, fallback_created)
         owner_changes = extract_owner_changes(flow_json)
         flow_activities = extract_flow_activities(flow_json, selected_mode)
-        first_lead_to_contact_time = extract_first_lead_to_contact_time(flow_json)
 
-        if pd.notna(first_lead_to_contact_time):
-            had_contact_before = has_contact_before_stage_change(flow_activities, first_lead_to_contact_time)
+        first_stage_change_time, old_stage, new_stage = extract_first_lead_to_advanced_stage(flow_json)
+
+        if pd.notna(first_stage_change_time):
+            had_contact_before = has_contact_before_stage_change(flow_activities, first_stage_change_time)
 
             if not had_contact_before:
                 excluded_stage_without_contact.append({
                     "deal_id": deal_id,
                     "deal_created": deal_created,
-                    "first_lead_to_contact_time": first_lead_to_contact_time,
-                    "motivo_exclusion": "Pasa de Lead a Contacto sin contacto previo en flow",
+                    "first_stage_change_time": first_stage_change_time,
+                    "old_stage": old_stage,
+                    "new_stage": new_stage,
+                    "motivo_exclusion": f"Pasa de {old_stage} a {new_stage} sin contacto previo en flow",
                 })
                 progress.progress(i / total if total else 1)
                 continue
@@ -728,7 +742,7 @@ if uploaded:
         )
 
     if len(excluded_df) > 0:
-        st.subheader("⚠️ Deals excluidos: pasan de Lead a Contacto sin contacto previo")
+        st.subheader("⚠️ Deals excluidos: salen de Lead sin contacto previo")
         st.dataframe(excluded_df, use_container_width=True)
 
     with st.expander("🔎 Debug segmentos reconstruidos desde flow"):
