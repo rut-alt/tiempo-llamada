@@ -11,9 +11,9 @@ st.set_page_config(
 
 st.title("📞 Primera llamada por asignación usando Flow de Pipedrive")
 st.write(
-    "Sube un Excel solo para obtener los negocios a analizar. "
-    "La app usa el flow API de Pipedrive como fuente de verdad para reconstruir: "
-    "creación del negocio, cambios de propietario y actividades, "
+    "Sube un Excel para obtener los negocios a analizar. "
+    "La app usa el flow API de Pipedrive como fuente de verdad para reconstruir "
+    "creación del negocio, reasignaciones y actividades, "
     "y calcula la primera llamada/contacto tras cada asignación."
 )
 
@@ -58,12 +58,12 @@ HOLIDAYS_2026 = {
 }
 
 TEAM_SCHEDULE = {
-    0: [(time(9, 0), time(20, 0))],
-    1: [(time(9, 0), time(20, 0))],
-    2: [(time(9, 0), time(20, 0))],
-    3: [(time(9, 0), time(20, 0))],
-    4: [(time(9, 0), time(20, 0))],
-    5: [(time(12, 30), time(20, 0))],
+    0: [(time(9, 0), time(20, 0))],    # lunes
+    1: [(time(9, 0), time(20, 0))],    # martes
+    2: [(time(9, 0), time(20, 0))],    # miércoles
+    3: [(time(9, 0), time(20, 0))],    # jueves
+    4: [(time(9, 0), time(20, 0))],    # viernes
+    5: [(time(12, 30), time(20, 0))],  # sábado
 }
 
 
@@ -80,6 +80,34 @@ def to_madrid_ts(value):
     if pd.isna(ts):
         return pd.NaT
     return ts.tz_convert(LOCAL_TIMEZONE).tz_localize(None)
+
+
+def get_activity_datetime_local(activity_data: dict) -> pd.Timestamp:
+    """
+    Para activities del flow:
+    - due_date + due_time vienen como hora UTC efectiva en este caso
+    - los convertimos a Europe/Madrid
+    """
+    due_date = clean_text(activity_data.get("due_date"))
+    due_time = clean_text(activity_data.get("due_time"))
+
+    if due_date and due_time:
+        dt_utc = pd.to_datetime(f"{due_date} {due_time}", errors="coerce", utc=True)
+        if pd.notna(dt_utc):
+            return dt_utc.tz_convert(LOCAL_TIMEZONE).tz_localize(None)
+
+    if due_date:
+        dt_utc = pd.to_datetime(f"{due_date} 00:00:00", errors="coerce", utc=True)
+        if pd.notna(dt_utc):
+            return dt_utc.tz_convert(LOCAL_TIMEZONE).tz_localize(None)
+
+    for field in ["marked_as_done_time", "add_time", "update_time", "timestamp"]:
+        value = activity_data.get(field)
+        ts = to_madrid_ts(value)
+        if pd.notna(ts):
+            return ts
+
+    return pd.NaT
 
 
 def is_holiday(ts: pd.Timestamp) -> bool:
@@ -230,6 +258,11 @@ def extract_created_time_from_flow(flow_json: dict, fallback_created: pd.Timesta
                 if pd.notna(ts):
                     created_candidates.append(ts)
 
+        if obj == "dealChange" and data.get("field_key") == "add_time":
+            ts = to_madrid_ts(data.get("log_time"))
+            if pd.notna(ts):
+                created_candidates.append(ts)
+
     if created_candidates:
         return min(created_candidates)
 
@@ -266,41 +299,42 @@ def extract_flow_activities(flow_json: dict, selected_mode: str) -> pd.DataFrame
     pattern = get_contact_pattern(selected_mode)
 
     for item in flow_json.get("data", []) or []:
-        obj = item.get("object")
-        data = item.get("data", {}) or {}
-
-        if obj != "activity":
+        if item.get("object") != "activity":
             continue
 
+        data = item.get("data", {}) or {}
         subject = clean_text(data.get("subject"))
+
         if not subject:
             continue
 
         if not pd.Series([subject]).str.contains(pattern, case=False, na=False).iloc[0]:
             continue
 
-        # prioridad temporal
-        event_time = (
-            to_madrid_ts(data.get("due_date"))
-            or to_madrid_ts(data.get("marked_as_done_time"))
-            or to_madrid_ts(data.get("add_time"))
-            or to_madrid_ts(data.get("update_time"))
-        )
-
-        if pd.isna(event_time):
+        activity_time = get_activity_datetime_local(data)
+        if pd.isna(activity_time):
             continue
 
         rows.append({
-            "activity_time": event_time,
+            "activity_time": activity_time,
             "activity_subject": subject,
             "activity_id": data.get("id"),
             "activity_type": clean_text(data.get("type")),
             "activity_done": data.get("done"),
+            "owner_name": clean_text(data.get("owner_name")),
+            "assigned_to_user_id": data.get("assigned_to_user_id"),
+            "user_id": data.get("user_id"),
+            "due_date": clean_text(data.get("due_date")),
+            "due_time": clean_text(data.get("due_time")),
+            "add_time_raw": clean_text(data.get("add_time")),
+            "marked_as_done_time_raw": clean_text(data.get("marked_as_done_time")),
         })
 
     if not rows:
         return pd.DataFrame(columns=[
-            "activity_time", "activity_subject", "activity_id", "activity_type", "activity_done"
+            "activity_time", "activity_subject", "activity_id", "activity_type",
+            "activity_done", "owner_name", "assigned_to_user_id", "user_id",
+            "due_date", "due_time", "add_time_raw", "marked_as_done_time_raw"
         ])
 
     return pd.DataFrame(rows).sort_values("activity_time").reset_index(drop=True)
@@ -311,12 +345,6 @@ def build_assignment_segments(
     deal_created: pd.Timestamp,
     owner_changes: pd.DataFrame
 ) -> pd.DataFrame:
-    """
-    Creamos tramos SOLO desde cambios de propietario.
-    En tu caso:
-    Central -> TOÑI  => tramo TOÑI empieza aquí
-    TOÑI -> Mayra    => tramo Mayra empieza aquí
-    """
     rows = []
 
     for _, ch in owner_changes.iterrows():
@@ -332,12 +360,11 @@ def build_assignment_segments(
     if not rows:
         return pd.DataFrame(columns=[
             "deal_id", "segment_start", "segment_source",
-            "from_owner", "to_owner", "agent_owner", "segment_end"
+            "from_owner", "to_owner", "agent_owner", "segment_end", "deal_created"
         ])
 
     seg = pd.DataFrame(rows).sort_values("segment_start").reset_index(drop=True)
 
-    # quitar duplicados consecutivos del mismo owner
     seg["prev_owner"] = seg["agent_owner"].shift(1)
     seg = seg[(seg.index == 0) | (seg["agent_owner"] != seg["prev_owner"])].copy()
     seg = seg.drop(columns=["prev_owner"]).reset_index(drop=True)
@@ -394,9 +421,7 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
         tmp[COL_DEAL_ID] = pd.to_numeric(tmp[COL_DEAL_ID], errors="coerce").astype("Int64")
         tmp[COL_CREATED] = pd.to_datetime(tmp[COL_CREATED], errors="coerce")
         tmp = tmp.dropna(subset=[COL_DEAL_ID]).copy()
-        deal_created_map = (
-            tmp.groupby(COL_DEAL_ID)[COL_CREATED].min().to_dict()
-        )
+        deal_created_map = tmp.groupby(COL_DEAL_ID)[COL_CREATED].min().to_dict()
 
     progress = st.progress(0)
     total = len(deal_ids)
@@ -438,8 +463,9 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
         )
 
         if not segments.empty:
-            segments_dbg = segments.copy()
-            debug_segments.append(segments_dbg)
+            seg_dbg = segments.copy()
+            seg_dbg["deal_id"] = deal_id
+            debug_segments.append(seg_dbg)
 
         if not flow_activities.empty:
             acts_dbg = flow_activities.copy()
@@ -564,12 +590,8 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
         media_total = ""
         mediana_total = ""
 
-    debug_segments_df = (
-        pd.concat(debug_segments, ignore_index=True) if debug_segments else pd.DataFrame()
-    )
-    debug_activities_df = (
-        pd.concat(debug_activities, ignore_index=True) if debug_activities else pd.DataFrame()
-    )
+    debug_segments_df = pd.concat(debug_segments, ignore_index=True) if debug_segments else pd.DataFrame()
+    debug_activities_df = pd.concat(debug_activities, ignore_index=True) if debug_activities else pd.DataFrame()
 
     return res, agent_stats, media_total, mediana_total, debug_segments_df, debug_activities_df, labels
 
@@ -635,7 +657,10 @@ if uploaded:
 
     with st.expander("🔎 Debug segmentos reconstruidos desde flow"):
         if len(debug_segments) > 0:
-            st.dataframe(debug_segments.sort_values(["deal_id", "segment_start"]), use_container_width=True)
+            st.dataframe(
+                debug_segments.sort_values(["deal_id", "segment_start"]),
+                use_container_width=True
+            )
         else:
             st.info("No hay segmentos para mostrar.")
 
