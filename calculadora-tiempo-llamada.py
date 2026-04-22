@@ -59,12 +59,12 @@ HOLIDAYS_2026 = {
 }
 
 DEFAULT_SCHEDULE = {
-    0: [(time(12, 30), time(20, 0))],  # lunes
-    1: [(time(12, 30), time(20, 0))],  # martes
-    2: [(time(12, 30), time(20, 0))],  # miércoles
-    3: [(time(12, 30), time(20, 0))],  # jueves
-    4: [(time(12, 30), time(20, 0))],  # viernes
-    5: [(time(12, 30), time(20, 0))],  # sábado
+    0: [(time(12, 30), time(20, 0))],
+    1: [(time(12, 30), time(20, 0))],
+    2: [(time(12, 30), time(20, 0))],
+    3: [(time(12, 30), time(20, 0))],
+    4: [(time(12, 30), time(20, 0))],
+    5: [(time(12, 30), time(20, 0))],
     # domingo sin servicio
 }
 
@@ -771,9 +771,13 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
             first_contact_subject = first_contact["activity_subject"]
 
             if first_contact_time < segment_start_adjusted:
-            delta_sec = 0.0
+                delta_sec = 0.0
             else:
-            delta_sec = business_seconds_between(segment_start_adjusted, first_contact_time, agent_owner)
+                delta_sec = business_seconds_between(
+                    segment_start_adjusted,
+                    first_contact_time,
+                    agent_owner
+                )
 
             rows.append({
                 "deal_id": deal_id,
