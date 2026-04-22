@@ -2,7 +2,6 @@ import io
 import requests
 import pandas as pd
 import streamlit as st
-from datetime import time
 
 st.set_page_config(
     page_title="Primera llamada por asignación (flow Pipedrive)",
@@ -13,8 +12,8 @@ st.title("📞 Primera llamada por asignación usando Flow de Pipedrive")
 st.write(
     "Sube un Excel para obtener los negocios a analizar. "
     "La app usa el flow API de Pipedrive como fuente de verdad para reconstruir "
-    "creación del negocio, reasignaciones, estados y actividades, "
-    "y calcula la primera llamada/contacto tras cada asignación."
+    "reasignaciones y actividades, y calcula la primera llamada/contacto "
+    "tras cada asignación real de propietario."
 )
 
 uploaded = st.file_uploader("Sube tu Excel (.xlsx)", type=["xlsx"])
@@ -45,28 +44,6 @@ COL_CREATED = "Negocio - Negocio creado el"
 ONE_DAY_SECONDS = 86400
 OWNER_CHANGE_TOLERANCE_SECONDS = 60
 LOCAL_TIMEZONE = "Europe/Madrid"
-
-HOLIDAYS_2026 = {
-    pd.Timestamp("2026-01-01").date(),
-    pd.Timestamp("2026-01-06").date(),
-    pd.Timestamp("2026-04-03").date(),
-    pd.Timestamp("2026-05-01").date(),
-    pd.Timestamp("2026-08-15").date(),
-    pd.Timestamp("2026-10-12").date(),
-    pd.Timestamp("2026-11-01").date(),
-    pd.Timestamp("2026-12-08").date(),
-    pd.Timestamp("2026-12-25").date(),
-}
-
-TEAM_SCHEDULE = {
-    0: [(time(9, 0), time(20, 0))],    # lunes
-    1: [(time(9, 0), time(20, 0))],    # martes
-    2: [(time(9, 0), time(20, 0))],    # miércoles
-    3: [(time(9, 0), time(20, 0))],    # jueves
-    4: [(time(9, 0), time(20, 0))],    # viernes
-    5: [(time(12, 30), time(20, 0))],  # sábado
-    # domingo sin servicio
-}
 
 
 def clean_text(value) -> str:
@@ -112,94 +89,10 @@ def get_activity_datetime_local(activity_data: dict) -> pd.Timestamp:
     return pd.NaT
 
 
-def is_holiday(ts: pd.Timestamp) -> bool:
-    return ts.date() in HOLIDAYS_2026
-
-
-def get_day_windows(ts: pd.Timestamp):
-    if is_holiday(ts):
-        return []
-
-    weekday = ts.weekday()
-    windows = TEAM_SCHEDULE.get(weekday, [])
-
-    return [
-        (
-            pd.Timestamp.combine(ts.date(), start_t),
-            pd.Timestamp.combine(ts.date(), end_t),
-        )
-        for start_t, end_t in windows
-    ]
-
-
-def move_to_next_work_moment(ts: pd.Timestamp) -> pd.Timestamp:
-    if pd.isna(ts):
-        return ts
-
-    cur = ts
-
-    for _ in range(370):
-        windows = get_day_windows(cur)
-
-        if not windows:
-            cur = pd.Timestamp(cur.date()) + pd.Timedelta(days=1)
-            cur = cur.replace(hour=0, minute=0, second=0, microsecond=0)
-            continue
-
-        for start_dt, end_dt in windows:
-            if cur <= start_dt:
-                return start_dt
-            if start_dt <= cur < end_dt:
-                return cur
-
-        cur = pd.Timestamp(cur.date()) + pd.Timedelta(days=1)
-        cur = cur.replace(hour=0, minute=0, second=0, microsecond=0)
-
-    return ts
-
-
-def business_seconds_between(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> float:
+def seconds_between_exact(start_ts: pd.Timestamp, end_ts: pd.Timestamp) -> float:
     if pd.isna(start_ts) or pd.isna(end_ts):
         return float("nan")
-    if end_ts < start_ts:
-        return float("nan")
-
-    cur = move_to_next_work_moment(start_ts)
-    total_seconds = 0.0
-
-    for _ in range(370):
-        if cur >= end_ts:
-            break
-
-        windows = get_day_windows(cur)
-        if not windows:
-            cur = pd.Timestamp(cur.date()) + pd.Timedelta(days=1)
-            cur = cur.replace(hour=0, minute=0, second=0, microsecond=0)
-            continue
-
-        progressed = False
-
-        for start_dt, end_dt in windows:
-            if cur < start_dt:
-                cur = start_dt
-
-            if start_dt <= cur < end_dt:
-                segment_end = min(end_dt, end_ts)
-                total_seconds += (segment_end - cur).total_seconds()
-                cur = segment_end
-                progressed = True
-
-                if cur >= end_ts:
-                    break
-
-        if cur >= end_ts:
-            break
-
-        if not progressed or all(cur >= end_dt for _, end_dt in windows):
-            cur = pd.Timestamp(cur.date()) + pd.Timedelta(days=1)
-            cur = cur.replace(hour=0, minute=0, second=0, microsecond=0)
-
-    return total_seconds
+    return (end_ts - start_ts).total_seconds()
 
 
 def format_duration_exact(seconds: float) -> str:
@@ -416,64 +309,15 @@ def has_contact_before_stage_change(flow_activities: pd.DataFrame, stage_change_
     return len(prior) > 0
 
 
-def extract_initial_owner_from_flow(flow_json: dict) -> str:
-    """
-    Solo para poder crear el tramo inicial cuando no hay dealChange de user_id.
-    """
-    candidates = []
-
-    for item in flow_json.get("data", []) or []:
-        if item.get("object") != "activity":
-            continue
-
-        data = item.get("data", {}) or {}
-        owner_name = clean_text(data.get("owner_name"))
-        if not owner_name:
-            continue
-
-        ts = get_activity_datetime_local(data)
-        if pd.isna(ts):
-            fallback_times = [
-                to_madrid_ts(data.get("add_time")),
-                to_madrid_ts(data.get("marked_as_done_time")),
-                to_madrid_ts(data.get("update_time")),
-            ]
-            ts = next((x for x in fallback_times if pd.notna(x)), pd.NaT)
-
-        if pd.notna(ts):
-            candidates.append((ts, owner_name))
-
-    if not candidates:
-        return ""
-
-    candidates = sorted(candidates, key=lambda x: x[0])
-    return candidates[0][1]
-
-
 def build_assignment_segments(
     deal_id: int,
     deal_created: pd.Timestamp,
     owner_changes: pd.DataFrame,
-    reopen_events: pd.DataFrame,
-    initial_owner: str = ""
+    reopen_events: pd.DataFrame
 ) -> pd.DataFrame:
     rows = []
 
-    initial_owner = clean_text(initial_owner)
-
-    # tramo inicial solo si no hay otra manera de saber asignación,
-    # y usando created ajustado al siguiente momento hábil
-    if initial_owner:
-        rows.append({
-            "deal_id": deal_id,
-            "segment_start": move_to_next_work_moment(deal_created),
-            "segment_source": "initial_owner_inferred",
-            "from_owner": "",
-            "to_owner": initial_owner,
-            "agent_owner": initial_owner,
-        })
-
-    # reasignaciones exactas: aquí NO reajustamos al horario
+    # Solo asignaciones reales
     for _, ch in owner_changes.iterrows():
         rows.append({
             "deal_id": deal_id,
@@ -484,7 +328,7 @@ def build_assignment_segments(
             "agent_owner": ch["new_owner"],
         })
 
-    # reaperturas: mantenemos el evento porque puede abrir un nuevo bloque operativo
+    # Reaperturas: si ya había owner asignado, abrimos bloque nuevo en esa reapertura
     for _, rp in reopen_events.iterrows():
         rp_time = rp["event_time"]
 
@@ -492,8 +336,6 @@ def build_assignment_segments(
         prior_changes = owner_changes[owner_changes["event_time"] <= rp_time].copy()
         if len(prior_changes) > 0:
             owner_at_reopen = clean_text(prior_changes.iloc[-1]["new_owner"])
-        elif initial_owner:
-            owner_at_reopen = initial_owner
 
         if owner_at_reopen:
             rows.append({
@@ -517,7 +359,6 @@ def build_assignment_segments(
     source_priority = {
         "reopened": 3,
         "owner_reassignment": 2,
-        "initial_owner_inferred": 1,
     }
     seg["source_priority"] = seg["segment_source"].map(source_priority).fillna(0)
     seg = seg.sort_values(["segment_start", "source_priority"], ascending=[True, False]).reset_index(drop=True)
@@ -617,6 +458,7 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
                 "segment_start": pd.NaT,
                 "segment_start_adjusted": pd.NaT,
                 "segment_end": pd.NaT,
+                "effective_start": pd.NaT,
                 "first_contact_time": pd.NaT,
                 "first_contact_subject": "",
                 "delta_sec": float("nan"),
@@ -631,7 +473,6 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
         reopen_events = extract_reopen_events(flow_json)
         flow_activities = extract_flow_activities(flow_json, selected_mode)
 
-        # Excluir leads que pasan de Lead a Contacto/Presupuesto/etc. sin contacto previo
         first_stage_change_time, old_stage, new_stage = extract_first_lead_to_advanced_stage(flow_json)
 
         if pd.notna(first_stage_change_time):
@@ -649,14 +490,11 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
                 progress.progress(i / total if total else 1)
                 continue
 
-        initial_owner = extract_initial_owner_from_flow(flow_json)
-
         segments = build_assignment_segments(
             deal_id=deal_id,
             deal_created=deal_created,
             owner_changes=owner_changes,
-            reopen_events=reopen_events,
-            initial_owner=initial_owner
+            reopen_events=reopen_events
         )
 
         if not segments.empty:
@@ -684,7 +522,7 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
             from_owner = seg["from_owner"]
             to_owner = seg["to_owner"]
 
-            # en asignaciones reales el start es exacto
+            # start exacto de la asignación
             segment_start_adjusted = segment_start
             effective_start = segment_start_adjusted - pd.Timedelta(seconds=OWNER_CHANGE_TOLERANCE_SECONDS)
 
@@ -710,6 +548,7 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
                     "segment_start": segment_start,
                     "segment_start_adjusted": segment_start_adjusted,
                     "segment_end": segment_end,
+                    "effective_start": effective_start,
                     "first_contact_time": pd.NaT,
                     "first_contact_subject": "",
                     "delta_sec": float("nan"),
@@ -725,7 +564,7 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
             if first_contact_time < segment_start_adjusted:
                 delta_sec = 0.0
             else:
-                delta_sec = business_seconds_between(segment_start_adjusted, first_contact_time)
+                delta_sec = seconds_between_exact(segment_start_adjusted, first_contact_time)
 
             rows.append({
                 "deal_id": deal_id,
@@ -738,6 +577,7 @@ def compute_from_flow(deals_df: pd.DataFrame, apply_filter_1day: bool, selected_
                 "segment_start": segment_start,
                 "segment_start_adjusted": segment_start_adjusted,
                 "segment_end": segment_end,
+                "effective_start": effective_start,
                 "first_contact_time": first_contact_time,
                 "first_contact_subject": first_contact_subject,
                 "delta_sec": delta_sec,
