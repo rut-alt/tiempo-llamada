@@ -2,20 +2,22 @@ import io
 import requests
 import pandas as pd
 import streamlit as st
+import unicodedata
 from datetime import time
 
 st.set_page_config(page_title="Tiempo hasta la primera llamada por asignación (Pipedrive)", layout="wide")
 
-st.title("Tiempo hasta la primera llamada por asignación")
+st.title("📞 Tiempo hasta la primera llamada por asignación")
 st.write(
     "Sube un Excel exportado de Pipedrive (Actividades). "
     "La app calcula, para cada negocio y para cada tramo de asignación, "
     "el tiempo hasta la primera llamada/contacto del agente asignado tras esa asignación. "
-    "Un mismo lead puede aparecer varias veces si ha sido reasignado varias veces."
+    "El owner real de cada actividad se reconstruye usando el flow del deal."
 )
 
 uploaded = st.file_uploader("Sube tu Excel (.xlsx)", type=["xlsx"])
 apply_filter_1day = st.checkbox("Excluir tramos cuyo primer contacto tarde 1 día o más", value=False)
+hide_segments_without_contact = st.checkbox("Ocultar tramos sin contacto", value=False)
 
 contact_mode = st.radio(
     "Qué quieres medir",
@@ -32,9 +34,10 @@ COL_CREATED = "Negocio - Negocio creado el"
 COL_DUE_DATE = "Actividad - Fecha de vencimiento"
 COL_SUBJECT = "Actividad - Asunto"
 COL_OWNER = "Negocio - Propietario"
-COL_ACTIVITY_OWNER = "Actividad - Asignada al usuario"
+COL_ACTIVITY_OWNER = "Actividad - Asignada al usuario"  # solo debug, no verdad analítica
 
 ONE_DAY_SECONDS = 86400
+LOCAL_TIMEZONE = "Europe/Madrid"
 
 HOLIDAYS_2026 = {
     pd.Timestamp("2026-01-01").date(),
@@ -55,10 +58,45 @@ def clean_text(value) -> str:
     return str(value).strip()
 
 
+def strip_accents(text: str) -> str:
+    text = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in text if not unicodedata.combining(ch))
+
+
 def normalize_name(value) -> str:
     if pd.isna(value) or value is None:
         return ""
-    return " ".join(str(value).strip().lower().split())
+    text = str(value).strip().lower()
+    text = strip_accents(text)
+    text = " ".join(text.split())
+    return text
+
+
+def canonical_agent_name(value) -> str:
+    norm = normalize_name(value)
+
+    alias_map = {
+        "toni": "antonia campos gil",
+        "toni ": "antonia campos gil",
+        "toñi": "antonia campos gil",
+        "antonia campos gil": "antonia campos gil",
+        "antonia  campos gil": "antonia campos gil",
+
+        "mayra diaz": "mayra diaz",
+        "mayra alejandra diaz": "mayra diaz",
+
+        "isabel tortosa": "isabel tortosa vivas",
+        "isabel tortosa vivas": "isabel tortosa vivas",
+    }
+
+    return alias_map.get(norm, norm)
+
+
+def to_madrid_ts(value):
+    ts = pd.to_datetime(value, errors="coerce", utc=True)
+    if isinstance(ts, pd.Series):
+        return ts.dt.tz_convert(LOCAL_TIMEZONE).dt.tz_localize(None)
+    return ts.tz_convert(LOCAL_TIMEZONE).tz_localize(None) if pd.notna(ts) else pd.NaT
 
 
 TEAM_SCHEDULE = {
@@ -190,16 +228,16 @@ def get_activity_filter_pattern(selected_mode: str) -> str:
 def get_result_labels(selected_mode: str):
     if selected_mode == "Primera llamada saliente":
         return {
-            "title": "Primera llamada por tramo de asignación",
+            "title": "✅ Primera llamada por tramo de asignación",
             "metric_count": "Tramos con 1ª llamada",
-            "time_col": "tiempo_hasta_primera_llamada",
             "download_name": "primera_llamada_por_asignacion.xlsx",
+            "time_col": "tiempo_hasta_primera_llamada",
         }
     return {
-        "title": "Primer contacto por tramo de asignación",
+        "title": "✅ Primer contacto por tramo de asignación",
         "metric_count": "Tramos con 1er contacto",
-        "time_col": "tiempo_hasta_primer_contacto",
         "download_name": "primer_contacto_por_asignacion.xlsx",
+        "time_col": "tiempo_hasta_primer_contacto",
     }
 
 
@@ -211,19 +249,24 @@ def extract_owner_changes(flow_json: dict) -> pd.DataFrame:
         data = item.get("data", {}) or {}
 
         if obj == "dealChange" and data.get("field_key") == "user_id":
-            event_time = pd.to_datetime(data.get("log_time"), errors="coerce")
-            old_owner = (data.get("additional_data") or {}).get("old_value_formatted")
-            new_owner = (data.get("additional_data") or {}).get("new_value_formatted")
+            event_time = to_madrid_ts(data.get("log_time"))
+            old_owner = clean_text((data.get("additional_data") or {}).get("old_value_formatted"))
+            new_owner = clean_text((data.get("additional_data") or {}).get("new_value_formatted"))
 
             if pd.notna(event_time):
                 rows.append({
                     "event_time": event_time,
-                    "old_owner": clean_text(old_owner),
-                    "new_owner": clean_text(new_owner),
+                    "old_owner": old_owner,
+                    "new_owner": new_owner,
+                    "old_owner_canonical": canonical_agent_name(old_owner),
+                    "new_owner_canonical": canonical_agent_name(new_owner),
                 })
 
     if not rows:
-        return pd.DataFrame(columns=["event_time", "old_owner", "new_owner"])
+        return pd.DataFrame(columns=[
+            "event_time", "old_owner", "new_owner",
+            "old_owner_canonical", "new_owner_canonical"
+        ])
 
     return pd.DataFrame(rows).sort_values("event_time").reset_index(drop=True)
 
@@ -234,14 +277,7 @@ def build_assignment_segments_for_deal(
     initial_owner: str,
     flow_json: dict
 ) -> pd.DataFrame:
-    """
-    Devuelve tramos de asignación del lead.
-    Cada tramo empieza:
-    - en la creación, para el owner inicial
-    - o en cada cambio de propietario, para el nuevo owner
-    """
     owner_changes = extract_owner_changes(flow_json)
-
     rows = []
 
     initial_owner = clean_text(initial_owner)
@@ -250,33 +286,41 @@ def build_assignment_segments_for_deal(
         rows.append({
             "deal_id": deal_id,
             "segment_start": deal_created,
-            "agent_owner": initial_owner,
+            "agent_owner_raw": initial_owner,
+            "agent_owner": canonical_agent_name(initial_owner),
             "segment_source": "deal_created",
+            "from_owner": "",
+            "to_owner": initial_owner,
         })
 
     for _, ch in owner_changes.iterrows():
         new_owner = clean_text(ch["new_owner"])
+        old_owner = clean_text(ch["old_owner"])
         event_time = ch["event_time"]
 
         if new_owner and pd.notna(event_time):
             rows.append({
                 "deal_id": deal_id,
                 "segment_start": event_time,
-                "agent_owner": new_owner,
+                "agent_owner_raw": new_owner,
+                "agent_owner": canonical_agent_name(new_owner),
                 "segment_source": "owner_reassignment",
+                "from_owner": old_owner,
+                "to_owner": new_owner,
             })
 
     if not rows:
-        return pd.DataFrame(columns=["deal_id", "segment_start", "agent_owner", "segment_source"])
+        return pd.DataFrame(columns=[
+            "deal_id", "segment_start", "agent_owner_raw",
+            "agent_owner", "segment_source", "from_owner", "to_owner"
+        ])
 
     seg = pd.DataFrame(rows).sort_values("segment_start").reset_index(drop=True)
 
-    # eliminar duplicados consecutivos del mismo agente si los hubiera
-    seg["agent_owner_norm"] = seg["agent_owner"].apply(normalize_name)
-    seg["prev_owner_norm"] = seg["agent_owner_norm"].shift(1)
-    seg = seg[(seg.index == 0) | (seg["agent_owner_norm"] != seg["prev_owner_norm"])].copy()
+    seg["prev_owner"] = seg["agent_owner"].shift(1)
+    seg = seg[(seg.index == 0) | (seg["agent_owner"] != seg["prev_owner"])].copy()
+    seg = seg.drop(columns=["prev_owner"]).reset_index(drop=True)
 
-    seg = seg.drop(columns=["agent_owner_norm", "prev_owner_norm"]).reset_index(drop=True)
     seg["segment_end"] = seg["segment_start"].shift(-1)
 
     return seg
@@ -290,12 +334,16 @@ def prepare_activities(df: pd.DataFrame, selected_mode: str) -> pd.DataFrame:
     df[COL_DUE_DATE] = pd.to_datetime(df[COL_DUE_DATE], errors="coerce")
     df[COL_SUBJECT] = df[COL_SUBJECT].astype(str).str.strip()
     df[COL_OWNER] = df[COL_OWNER].apply(clean_text)
-    df[COL_ACTIVITY_OWNER] = df[COL_ACTIVITY_OWNER].apply(clean_text)
+
+    if COL_ACTIVITY_OWNER in df.columns:
+        df[COL_ACTIVITY_OWNER] = df[COL_ACTIVITY_OWNER].apply(clean_text)
+    else:
+        df[COL_ACTIVITY_OWNER] = ""
 
     df = df.dropna(subset=[COL_DEAL_ID, COL_CREATED, COL_DUE_DATE, COL_SUBJECT]).copy()
 
     df["deal_owner"] = df[COL_OWNER]
-    df["activity_owner"] = df[COL_ACTIVITY_OWNER].replace("", "Sin asignar")
+    df["activity_owner_raw_excel"] = df[COL_ACTIVITY_OWNER]
 
     df["has_any_call"] = df[COL_SUBJECT].str.contains(
         r"llamada saliente|llamada entrante",
@@ -313,13 +361,50 @@ def prepare_activities(df: pd.DataFrame, selected_mode: str) -> pd.DataFrame:
     return df
 
 
+def assign_real_owner_to_activities(deal_activities: pd.DataFrame, segments: pd.DataFrame) -> pd.DataFrame:
+    deal_activities = deal_activities.copy()
+    deal_activities["real_owner"] = pd.NA
+    deal_activities["real_owner_raw"] = pd.NA
+    deal_activities["segment_index_owner"] = pd.NA
+
+    if deal_activities.empty or segments.empty:
+        return deal_activities
+
+    for idx, seg in segments.iterrows():
+        start = seg["segment_start"]
+        end = seg["segment_end"]
+        owner = seg["agent_owner"]
+        owner_raw = seg["agent_owner_raw"]
+        segment_index = idx + 1
+
+        if pd.isna(end):
+            mask = deal_activities[COL_DUE_DATE] >= start
+        else:
+            mask = (
+                (deal_activities[COL_DUE_DATE] >= start) &
+                (deal_activities[COL_DUE_DATE] < end)
+            )
+
+        deal_activities.loc[mask, "real_owner"] = owner
+        deal_activities.loc[mask, "real_owner_raw"] = owner_raw
+        deal_activities.loc[mask, "segment_index_owner"] = segment_index
+
+    return deal_activities
+
+
 def compute_by_assignment(df: pd.DataFrame, apply_filter_1day: bool, selected_mode: str):
     activities = prepare_activities(df, selected_mode)
 
     if activities.empty:
-        empty_res = pd.DataFrame()
-        empty_agents = pd.DataFrame()
-        return empty_res, empty_agents, "", "", activities
+        return (
+            pd.DataFrame(),
+            pd.DataFrame(),
+            "",
+            "",
+            activities,
+            pd.DataFrame(),
+            pd.DataFrame(),
+        )
 
     deal_base = (
         activities.groupby(COL_DEAL_ID, dropna=False)
@@ -331,6 +416,8 @@ def compute_by_assignment(df: pd.DataFrame, apply_filter_1day: bool, selected_mo
     )
 
     rows = []
+    all_segments = []
+    activities_with_real_owner = []
 
     progress = st.progress(0)
     total_deals = len(deal_base)
@@ -340,20 +427,16 @@ def compute_by_assignment(df: pd.DataFrame, apply_filter_1day: bool, selected_mo
         deal_created = deal_row["deal_created"]
         initial_owner = clean_text(deal_row["initial_owner"])
 
-        flow_json = None
-        segments = pd.DataFrame()
-
-        if api_token and company_domain:
-            try:
-                flow_json = fetch_deal_flow(api_token, company_domain, deal_id)
-                segments = build_assignment_segments_for_deal(
-                    deal_id=deal_id,
-                    deal_created=deal_created,
-                    initial_owner=initial_owner,
-                    flow_json=flow_json
-                )
-            except Exception:
-                flow_json = None
+        try:
+            flow_json = fetch_deal_flow(api_token, company_domain, deal_id)
+            segments = build_assignment_segments_for_deal(
+                deal_id=deal_id,
+                deal_created=deal_created,
+                initial_owner=initial_owner,
+                flow_json=flow_json
+            )
+        except Exception:
+            segments = pd.DataFrame()
 
         if segments.empty:
             if initial_owner:
@@ -361,28 +444,36 @@ def compute_by_assignment(df: pd.DataFrame, apply_filter_1day: bool, selected_mo
                     "deal_id": deal_id,
                     "segment_start": deal_created,
                     "segment_end": pd.NaT,
-                    "agent_owner": initial_owner,
+                    "agent_owner_raw": initial_owner,
+                    "agent_owner": canonical_agent_name(initial_owner),
                     "segment_source": "deal_created",
+                    "from_owner": "",
+                    "to_owner": initial_owner,
                 }])
             else:
                 progress.progress(i / total_deals if total_deals else 1)
                 continue
 
+        all_segments.append(segments.copy())
+
         deal_acts = activities[activities[COL_DEAL_ID] == deal_id].copy()
-        deal_acts["activity_owner_norm"] = deal_acts["activity_owner"].apply(normalize_name)
+        deal_acts = assign_real_owner_to_activities(deal_acts, segments)
+        activities_with_real_owner.append(deal_acts.copy())
 
         for seg_idx, seg in segments.iterrows():
             agent_owner = clean_text(seg["agent_owner"])
-            agent_owner_norm = normalize_name(agent_owner)
+            agent_owner_raw = clean_text(seg["agent_owner_raw"])
             segment_start = seg["segment_start"]
             segment_end = seg["segment_end"]
             segment_source = seg["segment_source"]
+            from_owner = seg["from_owner"]
+            to_owner = seg["to_owner"]
 
             segment_start_adjusted = move_to_next_work_moment(segment_start)
 
             candidate = deal_acts[
-                (deal_acts["activity_owner_norm"] == agent_owner_norm)
-                & (deal_acts[COL_DUE_DATE] >= segment_start_adjusted)
+                (deal_acts["real_owner"] == agent_owner) &
+                (deal_acts[COL_DUE_DATE] >= segment_start_adjusted)
             ].copy()
 
             if pd.notna(segment_end):
@@ -396,10 +487,13 @@ def compute_by_assignment(df: pd.DataFrame, apply_filter_1day: bool, selected_mo
                     "deal_created": deal_created,
                     "segment_index": seg_idx + 1,
                     "segment_source": segment_source,
+                    "from_owner": from_owner,
+                    "to_owner": to_owner,
+                    "agent_owner_raw": agent_owner_raw,
+                    "agent_owner": agent_owner,
                     "segment_start": segment_start,
                     "segment_start_adjusted": segment_start_adjusted,
                     "segment_end": segment_end,
-                    "agent_owner": agent_owner,
                     "first_contact_time": pd.NaT,
                     "first_contact_subject": "",
                     "delta_sec": float("nan"),
@@ -417,10 +511,13 @@ def compute_by_assignment(df: pd.DataFrame, apply_filter_1day: bool, selected_mo
                 "deal_created": deal_created,
                 "segment_index": seg_idx + 1,
                 "segment_source": segment_source,
+                "from_owner": from_owner,
+                "to_owner": to_owner,
+                "agent_owner_raw": agent_owner_raw,
+                "agent_owner": agent_owner,
                 "segment_start": segment_start,
                 "segment_start_adjusted": segment_start_adjusted,
                 "segment_end": segment_end,
-                "agent_owner": agent_owner,
                 "first_contact_time": first_contact_time,
                 "first_contact_subject": first_contact_subject,
                 "delta_sec": delta_sec,
@@ -430,15 +527,17 @@ def compute_by_assignment(df: pd.DataFrame, apply_filter_1day: bool, selected_mo
         progress.progress(i / total_deals if total_deals else 1)
 
     res = pd.DataFrame(rows)
+    segments_debug = pd.concat(all_segments, ignore_index=True) if all_segments else pd.DataFrame()
+    activities_debug = (
+        pd.concat(activities_with_real_owner, ignore_index=True)
+        if activities_with_real_owner else pd.DataFrame()
+    )
 
     if res.empty:
-        empty_agents = pd.DataFrame()
-        return res, empty_agents, "", "", activities
+        return res, pd.DataFrame(), "", "", activities_debug, segments_debug, activities
 
     if apply_filter_1day:
         res = res[(res["delta_sec"].isna()) | (res["delta_sec"] < ONE_DAY_SECONDS)].copy()
-
-    res["tiempo_hasta"] = res["delta_sec"].apply(format_duration_exact)
 
     if selected_mode == "Primera llamada saliente":
         res["tiempo_hasta_primera_llamada"] = res["delta_sec"].apply(format_duration_exact)
@@ -462,6 +561,7 @@ def compute_by_assignment(df: pd.DataFrame, apply_filter_1day: bool, selected_mo
         agent_stats["media"] = agent_stats["media_seg"].apply(format_duration_exact)
         agent_stats["mediana"] = agent_stats["mediana_seg"].apply(format_duration_exact)
         agent_stats = agent_stats.sort_values("media_seg", na_position="last")
+
         media_total = format_duration_exact(res_with_contact["delta_sec"].mean())
         mediana_total = format_duration_exact(res_with_contact["delta_sec"].median())
     else:
@@ -469,16 +569,24 @@ def compute_by_assignment(df: pd.DataFrame, apply_filter_1day: bool, selected_mo
         media_total = ""
         mediana_total = ""
 
-    return res, agent_stats, media_total, mediana_total, activities
+    return res, agent_stats, media_total, mediana_total, activities_debug, segments_debug, activities
 
 
-def to_excel_bytes(res: pd.DataFrame, agent_stats: pd.DataFrame, debug_calls: pd.DataFrame) -> bytes:
+def to_excel_bytes(
+    res: pd.DataFrame,
+    agent_stats: pd.DataFrame,
+    debug_activities_real_owner: pd.DataFrame,
+    debug_segments: pd.DataFrame,
+    debug_filtered_source: pd.DataFrame
+) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         res.to_excel(writer, index=False, sheet_name="por_asignacion")
         if len(agent_stats) > 0:
             agent_stats.to_excel(writer, index=False, sheet_name="resumen_por_agente")
-        debug_calls.to_excel(writer, index=False, sheet_name="debug_actividades")
+        debug_activities_real_owner.to_excel(writer, index=False, sheet_name="debug_owner_real")
+        debug_segments.to_excel(writer, index=False, sheet_name="debug_segmentos")
+        debug_filtered_source.to_excel(writer, index=False, sheet_name="debug_fuente_filtrada")
     return output.getvalue()
 
 
@@ -495,7 +603,6 @@ if uploaded:
         COL_DUE_DATE,
         COL_SUBJECT,
         COL_OWNER,
-        COL_ACTIVITY_OWNER,
     ]
     missing = [c for c in required_cols if c not in df.columns]
 
@@ -505,16 +612,20 @@ if uploaded:
         st.stop()
 
     if not api_token or not company_domain:
-        st.warning("Para calcular por tramos de asignación y reasignaciones necesitas API token y subdominio de Pipedrive.")
+        st.warning("Para calcular por tramos de asignación necesitas API token y subdominio.")
         st.stop()
 
     labels = get_result_labels(contact_mode)
 
-    res, agent_stats, media_total, mediana_total, debug_calls = compute_by_assignment(
+    res, agent_stats, media_total, mediana_total, debug_activities_real_owner, debug_segments, debug_filtered_source = compute_by_assignment(
         df,
         apply_filter_1day,
         contact_mode
     )
+
+    res_to_show = res.copy()
+    if hide_segments_without_contact and len(res_to_show) > 0:
+        res_to_show = res_to_show[res_to_show["has_contact"] == True].copy()
 
     col1, col2, col3 = st.columns(3)
     col1.metric(labels["metric_count"], f"{len(res[res['has_contact'] == True]):,}".replace(",", "."))
@@ -522,28 +633,52 @@ if uploaded:
     col3.metric("Mediana total", mediana_total)
 
     st.subheader(labels["title"])
-    st.dataframe(res, use_container_width=True)
+    st.dataframe(res_to_show, use_container_width=True)
 
     if len(agent_stats) > 0:
-        st.subheader("👤 Resumen por agente (por tramos con contacto)")
+        st.subheader("👤 Resumen por agente")
         st.dataframe(
             agent_stats[["agent_owner", "tramos_con_contacto", "media", "mediana"]],
             use_container_width=True
         )
 
-    with st.expander(" Debug: actividades filtradas"):
-        debug_cols = [
-            COL_DEAL_ID,
-            COL_CREATED,
-            "deal_owner",
-            "activity_owner",
-            COL_DUE_DATE,
-            COL_SUBJECT,
-            "has_any_call",
-        ]
-        st.dataframe(debug_calls[debug_cols], use_container_width=True)
+    with st.expander("🔎 Debug owner real por actividad"):
+        if len(debug_activities_real_owner) > 0:
+            debug_cols = [
+                COL_DEAL_ID,
+                COL_CREATED,
+                COL_DUE_DATE,
+                COL_SUBJECT,
+                "deal_owner",
+                "activity_owner_raw_excel",
+                "real_owner_raw",
+                "real_owner",
+                "segment_index_owner",
+            ]
+            existing_cols = [c for c in debug_cols if c in debug_activities_real_owner.columns]
+            st.dataframe(
+                debug_activities_real_owner[existing_cols].sort_values([COL_DEAL_ID, COL_DUE_DATE, COL_SUBJECT]),
+                use_container_width=True
+            )
+        else:
+            st.info("No hay actividades para mostrar.")
 
-    xlsx_bytes = to_excel_bytes(res, agent_stats, debug_calls)
+    with st.expander("🔎 Debug segmentos"):
+        if len(debug_segments) > 0:
+            st.dataframe(debug_segments.sort_values(["deal_id", "segment_start"]), use_container_width=True)
+        else:
+            st.info("No hay segmentos para mostrar.")
+
+    with st.expander("🔎 Debug fuente filtrada"):
+        st.dataframe(debug_filtered_source, use_container_width=True)
+
+    xlsx_bytes = to_excel_bytes(
+        res,
+        agent_stats,
+        debug_activities_real_owner,
+        debug_segments,
+        debug_filtered_source
+    )
     st.download_button(
         "⬇️ Descargar Excel con resultados",
         data=xlsx_bytes,
