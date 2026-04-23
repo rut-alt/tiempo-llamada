@@ -1050,12 +1050,12 @@ if uploaded:
     
     total_unique_leads = df[COL_DEAL_ID].dropna().nunique()
 
-leads_first_assignment_direct_call = res[
+    leads_first_assignment_direct_call = res[
     (res["segment_index"] == 1) &
     (res["direct_outgoing_after_assignment"] == True) &
     (res["has_contact"] == True) &
     (res["excluded_segment"] != True)
-]["deal_id"].dropna().nunique()
+    ]["deal_id"].dropna().nunique()
 
     res_to_show = res.copy()
     res_to_show = res_to_show[res_to_show["excluded_segment"] != True].copy()
