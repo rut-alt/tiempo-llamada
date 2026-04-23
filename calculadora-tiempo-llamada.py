@@ -695,10 +695,10 @@ def compute_from_flow(
 
         full_text = " | ".join([t for t in candidate_texts if t])
 
-    if is_contact_preference_note(full_text):
-        has_contact_preference = True
-        contact_preference_text = full_text
-    break
+        if is_contact_preference_note(full_text):
+            has_contact_preference = True
+            contact_preference_text = full_text
+        break
 
         if not segments.empty:
             seg_dbg = segments.copy()
